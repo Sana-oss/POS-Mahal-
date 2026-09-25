@@ -1,0 +1,6 @@
+{
+  "name": "محل POS - إدارة نقاط البيع والمخزون",
+  "description": "نظام بسيط وسريع باللغة العربية لإدارة المبيعات، قارئ الباركود، المخزون، المشتريات، ديون الزبائن، المصروفات، وحساب الأرباح بدقة للبقالة والمتاجر الغذائية.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
