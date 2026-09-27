@@ -490,8 +490,9 @@ export const DebtsView: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">ملاحظة أو سند (اختياري)</label> id="f-1"
+                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">ملاحظة أو سند (اختياري)</label>
                 <input
+                  id="f-1"
                   type="text"
                   value={payNote}
                   onChange={(e) => setPayNote(e.target.value)}
@@ -545,8 +546,9 @@ export const DebtsView: React.FC = () => {
 
             <form onSubmit={handleCreateCustomer} className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label> id="f-2"
+                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label>
                 <input
+                  id="f-2"
                   type="text"
                   value={newCustName}
                   onChange={(e) => setNewCustName(e.target.value)}
@@ -558,8 +560,9 @@ export const DebtsView: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-3" className="text-xs font-bold text-slate-700">رقم الهاتف</label> id="f-3"
+                <label htmlFor="f-3" className="text-xs font-bold text-slate-700">رقم الهاتف</label>
                 <input
+                  id="f-3"
                   type="text"
                   value={newCustPhone}
                   onChange={(e) => setNewCustPhone(e.target.value)}
@@ -571,8 +574,9 @@ export const DebtsView: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-4" className="text-xs font-bold text-slate-700">سقف الائتمان</label> id="f-4"
+                  <label htmlFor="f-4" className="text-xs font-bold text-slate-700">سقف الائتمان</label>
                   <input
+                    id="f-4"
                     type="number" step="0.01"
                     value={newCustLimit}
                     onChange={(e) => setNewCustLimit(e.target.value)}
@@ -581,8 +585,9 @@ export const DebtsView: React.FC = () => {
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-5" className="text-xs font-bold text-slate-700">دين سابق افتتاحي</label> id="f-5"
+                  <label htmlFor="f-5" className="text-xs font-bold text-slate-700">دين سابق افتتاحي</label>
                   <input
+                    id="f-5"
                     type="number" step="0.01"
                     value={newCustInitial}
                     onChange={(e) => setNewCustInitial(e.target.value)}
@@ -593,8 +598,9 @@ export const DebtsView: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-6" className="text-xs font-bold text-slate-700">ملاحظات العميل</label> id="f-6"
+                <label htmlFor="f-6" className="text-xs font-bold text-slate-700">ملاحظات العميل</label>
                 <input
+                  id="f-6"
                   type="text"
                   value={newCustNotes}
                   onChange={(e) => setNewCustNotes(e.target.value)}

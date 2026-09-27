@@ -1046,8 +1046,9 @@ export const POSView: React.FC<POSViewProps> = ({
 
             <form onSubmit={handleCreateCustomer} className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label> id="f-1"
+                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label>
                 <input
+                  id="f-1"
                   type="text"
                   value={newCustName}
                   onChange={(e) => setNewCustName(e.target.value)}
@@ -1059,8 +1060,9 @@ export const POSView: React.FC<POSViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">رقم الهاتف للتواصل</label> id="f-2"
+                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">رقم الهاتف للتواصل</label>
                 <input
+                  id="f-2"
                   type="text"
                   value={newCustPhone}
                   onChange={(e) => setNewCustPhone(e.target.value)}
@@ -1071,8 +1073,9 @@ export const POSView: React.FC<POSViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-3" className="text-xs font-bold text-slate-700">سقف الائتمان المسموح</label> id="f-3"
+                <label htmlFor="f-3" className="text-xs font-bold text-slate-700">سقف الائتمان المسموح</label>
                 <input
+                  id="f-3"
                   type="number" step="0.01"
                   value={newCustLimit}
                   onChange={(e) => setNewCustLimit(e.target.value)}
@@ -1131,8 +1134,9 @@ export const POSView: React.FC<POSViewProps> = ({
 
             <form onSubmit={handleAddManualItem} className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-4" className="text-xs font-bold text-slate-700">اسم الصنف أو الوصف *</label> id="f-4"
+                <label htmlFor="f-4" className="text-xs font-bold text-slate-700">اسم الصنف أو الوصف *</label>
                 <input
+                  id="f-4"
                   type="text"
                   value={manualItemName}
                   onChange={(e) => setManualItemName(e.target.value)}
@@ -1188,8 +1192,9 @@ export const POSView: React.FC<POSViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-5" className="text-xs font-bold text-slate-700">الكمية *</label> id="f-5"
+                <label htmlFor="f-5" className="text-xs font-bold text-slate-700">الكمية *</label>
                 <input
+                  id="f-5"
                   type="number"
                   // A weighed line may be under 1 (0.5 kg), so the floor matches
                   // the NUMERIC(10,3) quantity columns rather than 1.

@@ -771,8 +771,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               )}
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">اسم المنتج *</label> id="f-1"
+                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">اسم المنتج *</label>
                 <input
+                  id="f-1"
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
@@ -782,8 +783,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">رقم الباركود</label> id="f-2"
+                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">رقم الباركود</label>
                 <input
+                  id="f-2"
                   type="text"
                   value={editBarcode}
                   onChange={(e) => setEditBarcode(e.target.value)}
@@ -794,8 +796,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-3" className="text-xs font-bold text-slate-700">سعر البيع *</label> id="f-3"
+                  <label htmlFor="f-3" className="text-xs font-bold text-slate-700">سعر البيع *</label>
                   <input
+                    id="f-3"
                     type="number"
                     step="0.01"
                     value={editSellingPrice}
@@ -806,8 +809,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-4" className="text-xs font-bold text-slate-700">سعر الشراء</label> id="f-4"
+                  <label htmlFor="f-4" className="text-xs font-bold text-slate-700">سعر الشراء</label>
                   <input
+                    id="f-4"
                     type="number"
                     step="0.01"
                     value={editPurchasePrice}
@@ -836,8 +840,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-5" className="text-xs font-bold text-slate-700">المخزون الحالي (جرد يدوي)</label> id="f-5"
+                  <label htmlFor="f-5" className="text-xs font-bold text-slate-700">المخزون الحالي (جرد يدوي)</label>
                   <input
+                    id="f-5"
                     type="number"
                     // A count, not money: stock_quantity is NUMERIC(10,3).
                     step="0.001"
@@ -848,8 +853,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-6" className="text-xs font-bold text-slate-700">حد التنبيه بالنقص</label> id="f-6"
+                  <label htmlFor="f-6" className="text-xs font-bold text-slate-700">حد التنبيه بالنقص</label>
                   <input
+                    id="f-6"
                     type="number" step="0.001"
                     value={editMinimumStock}
                     onChange={(e) => setEditMinimumStock(e.target.value)}
@@ -861,8 +867,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-7" className="text-xs font-bold text-slate-700">القسم</label> id="f-7"
+                  <label htmlFor="f-7" className="text-xs font-bold text-slate-700">القسم</label>
                   <select
+                    id="f-7"
                     value={editCategory}
                     onChange={(e) => setEditCategory(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-2 py-2 text-xs"
@@ -875,8 +882,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </select>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label htmlFor="f-8" className="text-xs font-bold text-slate-700">الوحدة</label> id="f-8"
+                  <label htmlFor="f-8" className="text-xs font-bold text-slate-700">الوحدة</label>
                   <input
+                    id="f-8"
                     type="text"
                     value={editUnit}
                     onChange={(e) => setEditUnit(e.target.value)}
@@ -886,8 +894,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label htmlFor="f-9" className="text-xs font-bold text-slate-700">موقع الرف بالمحل</label> id="f-9"
+                <label htmlFor="f-9" className="text-xs font-bold text-slate-700">موقع الرف بالمحل</label>
                 <input
+                  id="f-9"
                   type="text"
                   value={editShelf}
                   onChange={(e) => setEditShelf(e.target.value)}

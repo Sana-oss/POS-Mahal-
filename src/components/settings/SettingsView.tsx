@@ -220,8 +220,9 @@ export const SettingsView: React.FC = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="flex flex-col gap-1">
-            <label htmlFor="f-1" className="text-xs font-bold text-slate-700">اسم المحل / البقالة *</label> id="f-1"
+            <label htmlFor="f-1" className="text-xs font-bold text-slate-700">اسم المحل / البقالة *</label>
             <input
+              id="f-1"
               type="text"
               value={shopName}
               onChange={(e) => setShopName(e.target.value)}
@@ -231,8 +232,9 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="f-2" className="text-xs font-bold text-slate-700">اسم الفرع</label> id="f-2"
+            <label htmlFor="f-2" className="text-xs font-bold text-slate-700">اسم الفرع</label>
             <input
+              id="f-2"
               type="text"
               value={branchName}
               onChange={(e) => setBranchName(e.target.value)}
@@ -241,8 +243,9 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="f-3" className="text-xs font-bold text-slate-700">اسم صاحب المتجر / المدير</label> id="f-3"
+            <label htmlFor="f-3" className="text-xs font-bold text-slate-700">اسم صاحب المتجر / المدير</label>
             <input
+              id="f-3"
               type="text"
               value={ownerName}
               onChange={(e) => setOwnerName(e.target.value)}
@@ -251,8 +254,9 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="f-4" className="text-xs font-bold text-slate-700">رمز العملة (يظهر في الفواتير)</label> id="f-4"
+            <label htmlFor="f-4" className="text-xs font-bold text-slate-700">رمز العملة (يظهر في الفواتير)</label>
             <input
+              id="f-4"
               type="text"
               value={currency}
               onChange={(e) => setCurrency(e.target.value)}
@@ -261,8 +265,9 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="f-5" className="text-xs font-bold text-slate-700">رقم هاتف المحل</label> id="f-5"
+            <label htmlFor="f-5" className="text-xs font-bold text-slate-700">رقم هاتف المحل</label>
             <input
+              id="f-5"
               type="text"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -272,8 +277,9 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label htmlFor="f-6" className="text-xs font-bold text-slate-700">عنوان المتجر</label> id="f-6"
+            <label htmlFor="f-6" className="text-xs font-bold text-slate-700">عنوان المتجر</label>
             <input
+              id="f-6"
               type="text"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
@@ -283,8 +289,9 @@ export const SettingsView: React.FC = () => {
         </div>
 
         <div className="flex flex-col gap-1 pt-2">
-          <label htmlFor="f-7" className="text-xs font-bold text-slate-700">رسالة تذييل الفاتورة الحرارية (أسفل الإيصال)</label> id="f-7"
+          <label htmlFor="f-7" className="text-xs font-bold text-slate-700">رسالة تذييل الفاتورة الحرارية (أسفل الإيصال)</label>
           <textarea
+            id="f-7"
             value={receiptFooter}
             onChange={(e) => setReceiptFooter(e.target.value)}
             rows={2}
