@@ -7,7 +7,7 @@
 // trustworthy when it is finally pointed at a real project.
 
 import { describe, it, expect } from 'vitest';
-import { analyseIntegrity, n, near, groupBy, WATCHED_TABLES } from './verify-cloud.mjs';
+import { analyseIntegrity, n, near, groupBy, WATCHED_TABLES, checkRealtimeSubscription } from './verify-cloud.mjs';
 
 const find = (results, name) => {
   const hit = results.find((r) => r.name === name);
@@ -271,6 +271,84 @@ describe('customer ledger invariants', () => {
   it('catches a negative balance even though the column forbids one', () => {
     const { results } = run({ customers: [{ id: 2, name: 'سالم', balance: -5 }] });
     expect(find(results, 'no customer has a negative balance').broken).toBe(1);
+  });
+
+  // Regression, from a real run: a customer whose balance exactly equals their
+  // debt sales, with no payments, has an opening balance of zero. The sign was
+  // flipped, so this reported an opening of twice the amount owed.
+  it('reports zero opening when the balance equals the debt sales', () => {
+    const { results } = run({
+      customers: [{ id: 1, name: 'Sanad', balance: 234.6 }],
+      sales: [{ ...CLEAN_SALE, customer_id: 1, payment_method: 'debt', total_amount: 234.6 }],
+      customerPayments: [],
+    });
+    const info = results.find((r) => r.name.startsWith('customer opening balances'));
+    expect(info, 'a clean account should not report an opening balance at all').toBeUndefined();
+  });
+
+  it('reports a genuine opening balance in the right direction', () => {
+    const { results } = run({
+      customers: [{ id: 1, name: 'Sanad', balance: 234.6 }],
+      sales: [{ ...CLEAN_SALE, customer_id: 1, payment_method: 'debt', total_amount: 100 }],
+      customerPayments: [],
+    });
+    const info = results.find((r) => r.name.startsWith('customer opening balances'));
+    // 234.60 owed, of which 100 came from debt sales, so 134.60 was carried in.
+    expect(info?.details.join()).toMatch(/134\.60/);
+  });
+});
+
+describe('realtime subscription probe', () => {
+  // Regression, from a real run: removeChannel() was called synchronously right
+  // after subscribe(), inside the Promise executor. That tears the channel down
+  // while it is still connecting, so the subscribe callback can never fire and
+  // the result is always TIMED_OUT - a guaranteed false alarm that would train
+  // the reader to ignore a warning which might have been real.
+  it('removes the channel only after the handshake resolves', async () => {
+    const order = [];
+    const channel = {
+      on() {
+        return channel;
+      },
+      subscribe(cb) {
+        order.push('subscribe');
+        // Never calls back, so the only resolution path is the timeout.
+        this._cb = cb;
+      },
+    };
+    const supabase = {
+      channel: () => channel,
+      removeChannel: async () => {
+        order.push('removeChannel');
+      },
+    };
+
+    await checkRealtimeSubscription(supabase, { timeoutMs: 5 });
+
+    expect(order).toEqual(['subscribe', 'removeChannel']);
+  });
+
+  it('still tears the channel down when the subscribe callback fires', async () => {
+    const order = [];
+    const channel = {
+      on() {
+        return channel;
+      },
+      subscribe(cb) {
+        order.push('subscribe');
+        setTimeout(() => cb('SUBSCRIBED'), 1);
+      },
+    };
+    const supabase = {
+      channel: () => channel,
+      removeChannel: async () => {
+        order.push('removeChannel');
+      },
+    };
+
+    await checkRealtimeSubscription(supabase, { timeoutMs: 500 });
+
+    expect(order).toEqual(['subscribe', 'removeChannel']);
   });
 });
 

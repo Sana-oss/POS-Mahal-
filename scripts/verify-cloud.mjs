@@ -277,7 +277,13 @@ export function analyseIntegrity(data) {
     const debtSales = sales.filter((s) => s.customer_id === customer.id && s.payment_method === 'debt');
     const paid = (paymentsByCustomer.get(customer.id) ?? []).reduce((a, p) => a + n(p.amount), 0);
     const debtTotal = debtSales.reduce((a, s) => a + n(s.total_amount), 0);
-    const impliedOpening = n(customer.balance) + debtTotal - paid;
+    // A debt sale raises the balance (rpc_execute_sale does
+    // `balance = balance + total_amount`) and a payment lowers it, so
+    //   balance = opening + debtSales - payments
+    // which rearranges to opening = balance - debtSales + payments.
+    // Adding debtSales here instead doubled it: a customer whose balance exactly
+    // equalled their debt sales reported an opening of twice that amount.
+    const impliedOpening = n(customer.balance) - debtTotal + paid;
 
     if (!near(impliedOpening, 0, 0.05) && infoLines.length < MAX_DETAILS) {
       infoLines.push(
@@ -441,28 +447,34 @@ async function checkFractionalSupport(supabase) {
   }
 }
 
-async function checkRealtimeSubscription(supabase) {
-  section('Realtime - can this client subscribe to every watched table?');
+/**
+ * @param timeoutMs injectable so the ordering can be tested without waiting 15s.
+ */
+export async function checkRealtimeSubscription(supabase, { timeoutMs = 15000 } = {}) {
+  if (!JSON_MODE) section('Realtime - can this client subscribe to every watched table?');
 
+  const channel = supabase.channel('verify-probe');
+  for (const table of WATCHED_TABLES) {
+    channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => {});
+  }
+
+  // The channel must NOT be removed here. removeChannel() runs synchronously
+  // inside a Promise executor, so calling it before the handshake resolves tears
+  // the channel down while it is still connecting, and the subscribe callback can
+  // then never fire - the status is guaranteed to be TIMED_OUT no matter how
+  // healthy the project is. Teardown happens after the await below.
   const status = await new Promise((resolve) => {
-    const channel = supabase.channel('verify-probe');
-    for (const table of WATCHED_TABLES) {
-      channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => {});
-    }
     let settled = false;
-    channel.subscribe((s) => {
+    const done = (s) => {
       if (settled) return;
       settled = true;
       resolve(s);
-    });
-    setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        resolve('TIMED_OUT');
-      }
-    }, 15000);
-    supabase.removeChannel(channel);
+    };
+    channel.subscribe(done);
+    setTimeout(() => done('TIMED_OUT'), timeoutMs);
   });
+
+  await supabase.removeChannel(channel);
 
   if (status === 'SUBSCRIBED') {
     emit('pass', `subscribed to all ${WATCHED_TABLES.length} watched tables`, []);
@@ -470,12 +482,17 @@ async function checkRealtimeSubscription(supabase) {
     emit('fail', 'the realtime channel was refused', [
       'Usually a watched table is missing from the supabase_realtime publication (migration 0006), or RLS blocks it.',
     ]);
-  } else {
-    emit('warn', 'the realtime subscription timed out', [
-      'A subscribed channel is required for multi-register sync. Check the websocket is reachable.',
+  } else if (status === 'TIMED_OUT') {
+    emit('warn', 'the realtime subscription did not complete in time', [
+      `No subscribe response after ${Math.round(timeoutMs / 1000)}s.`,
+      'The websocket could be blocked by a firewall, proxy or VPN on this machine.',
+      'This says nothing about the database: run the SQL audit to confirm the publication,',
+      'and confirm delivery with the two-browser test below.',
     ]);
+  } else {
+    emit('warn', `unexpected subscription status: ${status}`, []);
   }
-  info('a successful subscribe does not prove events are delivered - see the two-browser steps below');
+  if (!JSON_MODE) info('a successful subscribe does not prove events are delivered - see the two-browser steps below');
 }
 
 /**
