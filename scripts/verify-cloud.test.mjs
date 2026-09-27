@@ -16,9 +16,10 @@ const find = (results, name) => {
 };
 
 /** A sale whose every invariant holds: 2 lines, 30 revenue, 20 cost, 10 profit. */
+const CLEAN_INVOICE = 'INV-20260928-101500-a1b2';
 const CLEAN_SALE = {
   id: 1,
-  invoice_no: 'S-001',
+  invoice_no: CLEAN_INVOICE,
   customer_id: null,
   payment_method: 'cash',
   items_count: 2,
@@ -30,7 +31,10 @@ const CLEAN_ITEMS = [
   { id: 1, sale_id: 1, product_id: 10, quantity: 1, unit_price: 10, total_price: 10, total_cost: 5, profit: 5 },
   { id: 2, sale_id: 1, product_id: 10, quantity: 1, unit_price: 20, total_price: 20, total_cost: 15, profit: 5 },
 ];
-const CLEAN_MOVES = [{ id: 1, reference_id: 1, type: 'sale', quantity: -2 }];
+// stock_movements.reference_id is TEXT and holds the invoice number, not the
+// sale uuid. Mirroring the real schema here is what stops the grouping bug in
+// analyseIntegrity from hiding behind fixtures that agree with the mistake.
+const CLEAN_MOVES = [{ id: 1, reference_id: CLEAN_INVOICE, type: 'sale', quantity: -2 }];
 
 const cleanData = () => ({
   sales: [CLEAN_SALE],
@@ -127,6 +131,23 @@ describe('sale header invariants', () => {
   it('catches a stock movement whose quantity does not match the lines', () => {
     const { results } = run({ stockMovements: [{ ...CLEAN_MOVES[0], quantity: -1 }] });
     expect(find(results, 'every sale has line items and a matching stock movement').broken).toBe(1);
+  });
+
+  // Regression: reference_id is TEXT holding the invoice number. Grouping
+  // movements by reference_id but looking them up with sale.id (a uuid) never
+  // matches, so every real sale was reported as missing its stock movement.
+  it('matches movements by invoice number, not by the sale uuid', () => {
+    const { results } = run();
+    expect(find(results, 'every sale has line items and a matching stock movement').broken).toBe(0);
+  });
+
+  it('does not mistake another sale movement for this sale\'s', () => {
+    const { results } = run({
+      stockMovements: [{ ...CLEAN_MOVES[0], reference_id: 'INV-20260928-999999-ffff' }],
+    });
+    const check = find(results, 'every sale has line items and a matching stock movement');
+    expect(check.broken).toBe(1);
+    expect(check.details.join()).toMatch(/no stock_movements/);
   });
 
   it('explains a floored fractional items_count, the migration 0007 symptom', () => {

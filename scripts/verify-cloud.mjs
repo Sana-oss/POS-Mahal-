@@ -151,7 +151,10 @@ export function analyseIntegrity(data) {
       addDetail(d, `sale ${sale.invoice_no}: profit=${sale.profit} but amount-cost=${n(sale.total_amount) - n(sale.total_cost)}`);
     }
 
-    const saleMoves = (movesByRef.get(sale.id) ?? []).filter((m) => m.type === 'sale');
+    // stock_movements.reference_id is TEXT holding the invoice number ('INV-...'),
+    // not the sale's uuid. Grouping by reference_id but looking up sale.id would
+    // never match and would report every sale as missing its movement.
+    const saleMoves = (movesByRef.get(sale.invoice_no) ?? []).filter((m) => m.type === 'sale');
     if (saleMoves.length === 0) {
       moveBad++;
       addDetail(d, `sale ${sale.invoice_no}: no stock_movements row with type='sale'`);
