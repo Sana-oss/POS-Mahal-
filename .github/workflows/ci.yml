@@ -1,0 +1,75 @@
+name: CI
+
+# Cancel superseded runs on the same ref. Without this, every push queues a
+# full test run behind the previous one and the badge lags reality by minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A new push to main supersedes the run in flight, so don't report it as failed.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      # bun.lock is the authoritative lockfile (package-lock.json is not
+      # committed), so --frozen-lockfile makes a drifted lockfile a hard failure
+      # rather than a silent re-resolve that hides which dependency changed.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # tsc --noEmit. Catches the type errors, including a JSX attribute that
+      # landed outside its tag and became a text node instead of failing here.
+      - name: Typecheck
+        run: bun run lint
+
+      # The full suite runs with VITE_SUPABASE_* blanked in vite.config.ts, so no
+      # secrets and no live database are involved. That is deliberate: CI proves
+      # the client, and supabase/audit.sql plus scripts/verify-cloud.mjs prove
+      # the database.
+      - name: Test
+        run: bun run test
+
+      - name: Build
+        run: bun run build
+
+      # Guards the two failure modes that are easy to commit by accident and
+      # invisible in review: a secret in a tracked file, and a .env that slipped
+      # past .gitignore.
+      - name: Verify no secrets are tracked
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env is tracked in git. Remove it from the index and rotate any secrets in it."
+            exit 1
+          fi
+          if git ls-files | grep -qE '\.(pem|key|p12|pfx)$'; then
+            echo "::error::A private key or certificate is tracked in git."
+            git ls-files | grep -E '\.(pem|key|p12|pfx)$'
+            exit 1
+          fi
+          echo "no tracked secrets"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-log
+          path: dist/
+          retention-days: 3
+          if-no-files-found: ignore
