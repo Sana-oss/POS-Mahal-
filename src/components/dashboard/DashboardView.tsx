@@ -41,15 +41,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const todaySalesCount = todaySales.length;
   const avgTicket = todaySalesCount > 0 ? todayRevenue / todaySalesCount : 0;
 
-  // Total outstanding customer debts
-  const totalDebts = customers.reduce((acc, c) => acc + c.balance, 0);
+  // Total outstanding customer debts.
+  // Only positive balances count. A negative balance is money the shop owes the
+  // customer, which is a liability rather than a receivable, so netting it in
+  // under-reported what the shop is owed. This also makes the figure agree with
+  // the customer count shown in the same card, which already filtered on > 0.
+  const owingCustomers = customers.filter((c) => c.balance > 0);
+  const totalDebts = owingCustomers.reduce((acc, c) => acc + c.balance, 0);
 
   // Low stock products
   const lowStockProducts = products.filter((p) => p.stock_quantity <= p.minimum_stock);
 
-  // Top selling products aggregated from sales
+  // Top selling products today.
+  // Scoped to todaySales to match the rest of this screen, which is a shift view:
+  // the revenue, profit and invoice-count cards are all explicitly "today", and
+  // this panel sat beside them with an all-time figure and no period in its
+  // caption, so a 99-unit total from last week outranked today's sales. The
+  // all-time picture is still one click away via the full invoice log.
   const topProductsMap: { [productId: string]: { name: string; quantity: number; revenue: number } } = {};
-  sales.forEach((s) => {
+  todaySales.forEach((s) => {
     s.items.forEach((item) => {
       if (!topProductsMap[item.product_id]) {
         topProductsMap[item.product_id] = {
@@ -232,7 +242,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
           <div className="mt-3 pt-2 border-t border-slate-100 text-[11px] text-slate-400 flex items-center justify-between">
-            <span>موزعة على {customers.filter((c) => c.balance > 0).length} زبائن عليهم ديون</span>
+            <span>موزعة على {owingCustomers.length} زبائن عليهم ديون</span>
             <span className="text-rose-600 font-bold">مطلوب متابعة</span>
           </div>
         </div>
@@ -311,7 +321,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="py-8 flex flex-col items-center justify-center text-slate-400 gap-1.5">
                 <span className="material-symbols-outlined text-[36px] text-emerald-500">check_circle</span>
                 <span className="text-xs font-bold text-slate-700">لا توجد نواقص في المخزون!</span>
-                <span className="text-[11px]">جميع الأصناف المسجلة أعلى من الحد الأدنى.</span>
+                <span className="text-[11px]">كل الأصناف فوق الحد الأدنى للطلب.</span>
               </div>
             )}
           </div>
@@ -334,7 +344,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="material-symbols-outlined text-[20px] text-amber-500">workspace_premium</span>
-              <h2 className="font-bold text-base text-slate-900">الأكثر مبيعاً</h2>
+              <h2 className="font-bold text-base text-slate-900">الأكثر مبيعاً اليوم</h2>
             </div>
             <span className="text-xs text-slate-400">حسب الكمية</span>
           </div>

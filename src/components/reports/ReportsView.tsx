@@ -1,10 +1,38 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { formatArabicDate, formatCurrency, formatTimeOnly } from '../../lib/calculations';
 import { useStore } from '../../hooks/useStore';
 import { Sale } from '../../types';
 
 interface ReportsViewProps {
-  onPrintSale: (sale: Sale) => void;
+  onPrintSale: (s: Sale) => void;
+}
+
+/**
+ * The current local calendar day as YYYY-MM-DD.
+ *
+ * Acts as a dependency so the period memo re-evaluates when the day changes,
+ * which matters for a register left open overnight. `toDateString()` is used
+ * rather than `toISOString()` on purpose: the latter is UTC and would flip a
+ * day early for an evening shift.
+ */
+function useDayKey(): string {
+  const [dayKey, setDayKey] = useState(() => new Date().toDateString());
+
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date().toDateString();
+      setDayKey((prev) => (prev === now ? prev : now));
+    };
+    const timer = setInterval(tick, 60_000);
+    // Also correct immediately when the tab regains focus after being suspended.
+    window.addEventListener('focus', tick);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', tick);
+    };
+  }, []);
+
+  return dayKey;
 }
 
 export const ReportsView: React.FC<ReportsViewProps> = ({ onPrintSale }) => {
@@ -12,9 +40,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ onPrintSale }) => {
   const { sales, expenses, products, settings } = state;
 
   const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'all'>('today');
+  const dayKey = useDayKey();
 
   // Filter sales and expenses by period
   const filteredData = useMemo(() => {
+    // Local midnight, compared against a real epoch parsed from the UTC
+    // `created_at`, so a sale at 23:50 local is never filed under the wrong day.
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const weekStart = todayStart - 7 * 86400000;
@@ -29,7 +60,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ onPrintSale }) => {
     const periodExpenses = expenses.filter((e) => new Date(e.created_at).getTime() >= startTime);
 
     return { periodSales, periodExpenses };
-  }, [sales, expenses, period]);
+    // dayKey is a dependency so "today" rolls over at midnight for a register
+    // left open overnight. Without it the memo froze on whatever day it first
+    // evaluated, and a shop open past midnight kept reporting yesterday.
+  }, [sales, expenses, period, dayKey]);
 
   // Aggregated calculations
   const totalRevenue = useMemo(

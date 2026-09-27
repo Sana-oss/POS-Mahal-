@@ -173,10 +173,32 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
     onClose();
   };
 
+  // F3 shortcut: while the "unknown barcode" banner is on screen, jump straight
+  // to creating that product, matching the button hint on the banner.
+  useEffect(() => {
+    if (!isOpen || !unknownBarcode) return;
+
+    const handleFastAddShortcut = (event: KeyboardEvent) => {
+      if (event.key !== 'F3') return;
+      event.preventDefault();
+      const code = unknownBarcode;
+      handleModalClose();
+      onOpenFastAdd(code);
+    };
+
+    window.addEventListener('keydown', handleFastAddShortcut);
+    return () => window.removeEventListener('keydown', handleFastAddShortcut);
+  }, [isOpen, unknownBarcode]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="ماسح الباركود"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+    >
       <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-200">
         {/* Header */}
         <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between">
@@ -189,6 +211,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
           </div>
           <button
             onClick={handleModalClose}
+            aria-label="إغلاق الماسح"
             className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition text-slate-300 hover:text-white"
             type="button"
           >
@@ -277,13 +300,17 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
         {/* Manual Barcode Input Fallback */}
         <form onSubmit={handleManualSubmit} className="p-4 bg-slate-50 flex flex-col gap-2">
-          <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
+          <label
+            htmlFor="scanner-manual"
+            className="text-xs font-bold text-slate-700 flex items-center gap-1"
+          >
             <span className="material-symbols-outlined text-[16px] text-teal-600">keyboard</span>
             <span>إدخال الباركود يدوياً أو عبر قارئ الليزر USB:</span>
           </label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input
+                id="scanner-manual"
                 type="text"
                 value={manualCode}
                 onChange={(e) => setManualCode(e.target.value)}

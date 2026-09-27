@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { formatArabicDate, formatCurrency } from '../../lib/calculations';
 import { useStore } from '../../hooks/useStore';
+import type { Expense } from '../../types';
 
 export const ExpensesView: React.FC = () => {
   const { state, addExpense, deleteExpense } = useStore();
@@ -13,6 +14,8 @@ export const ExpensesView: React.FC = () => {
   const [note, setNote] = useState('');
   const [filterCategory, setFilterCategory] = useState('all');
   const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Expense | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const categories = [
     'كهرباء',
@@ -34,7 +37,15 @@ export const ExpensesView: React.FC = () => {
     return expenses.filter((e) => e.category === filterCategory);
   }, [expenses, filterCategory]);
 
-  const handleAdd = (e: React.FormEvent) => {
+  // Subtotal for the rows actually on screen. Without this, selecting one
+  // category put a single row worth e.g. 65.00 directly under an all-time
+  // headline of 130.00, with nothing on screen saying which scope the headline
+  // referred to.
+  const filteredTotal = useMemo(() => {
+    return filteredExpenses.reduce((acc, e) => acc + e.amount, 0);
+  }, [filteredExpenses]);
+
+  const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -49,7 +60,7 @@ export const ExpensesView: React.FC = () => {
     }
 
     try {
-      addExpense({
+      await addExpense({
         title: title.trim(),
         amount: val,
         category,
@@ -63,6 +74,26 @@ export const ExpensesView: React.FC = () => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
+    }
+  };
+
+  /**
+   * Deleting an expense is irreversible and moves net profit, so it is confirmed
+   * first. This was the only destructive action in the app without a dialog;
+   * product deletion and the demo reset both already confirm.
+   */
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setError(null);
+    setIsDeleting(true);
+    try {
+      await deleteExpense(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+      setDeleteTarget(null);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -84,10 +115,20 @@ export const ExpensesView: React.FC = () => {
 
         <div className="flex items-center gap-3">
           <div className="bg-slate-50 px-4 py-2 rounded-xl border border-slate-200 text-right">
-            <span className="text-[11px] text-slate-400 font-semibold block">إجمالي المصروفات</span>
-            <span className="text-lg font-extrabold text-slate-900 font-num">
-              {formatCurrency(totalExpenses, settings.currency)}
+            <span className="text-[11px] text-slate-400 font-semibold block">
+              {filterCategory === 'all' ? 'إجمالي المصروفات' : `مصروفات: ${filterCategory}`}
             </span>
+            <span className="text-lg font-extrabold text-slate-900 font-num">
+              {formatCurrency(
+                filterCategory === 'all' ? totalExpenses : filteredTotal,
+                settings.currency
+              )}
+            </span>
+            {filterCategory !== 'all' && (
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                الإجمالي الكلي: {formatCurrency(totalExpenses, settings.currency)}
+              </span>
+            )}
           </div>
 
           <button
@@ -111,6 +152,21 @@ export const ExpensesView: React.FC = () => {
         </span>
       </div>
 
+      {/*
+        Rendered at the top level, not inside the add form. Deleting a row sets
+        the same error state, and while the banner lived inside the collapsed
+        form a failed delete updated state that was never shown: the row stayed,
+        nothing was written, and the cashier was given no indication at all.
+      */}
+      {error && (
+        <div
+          role="alert"
+          className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-bold"
+        >
+          {error}
+        </div>
+      )}
+
       {/* Add Expense Form */}
       {isAdding && (
         <div className="bg-white rounded-2xl border border-rose-200 shadow-md p-5 flex flex-col gap-3.5 animate-in slide-in-from-top-2">
@@ -119,16 +175,11 @@ export const ExpensesView: React.FC = () => {
             <span>تسجيل قيد مصروف جديد</span>
           </h2>
 
-          {error && (
-            <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-bold">
-              {error}
-            </div>
-          )}
-
           <form onSubmit={handleAdd} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="flex flex-col gap-1 sm:col-span-2">
-              <label className="text-xs font-bold text-slate-700">بيان المصروف *</label>
+              <label htmlFor="expense-title" className="text-xs font-bold text-slate-700">بيان المصروف *</label>
               <input
+                id="expense-title"
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -140,11 +191,12 @@ export const ExpensesView: React.FC = () => {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-slate-700">المبلغ *</label>
+              <label htmlFor="expense-amount" className="text-xs font-bold text-slate-700">المبلغ *</label>
               <div className="relative">
                 <input
+                  id="expense-amount"
                   type="number"
-                  step="0.5"
+                  step="0.01"
                   min="0.5"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
@@ -160,8 +212,9 @@ export const ExpensesView: React.FC = () => {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-slate-700">بند التصنيف</label>
+              <label htmlFor="expense-category" className="text-xs font-bold text-slate-700">بند التصنيف</label>
               <select
+                id="expense-category"
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
                 className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs"
@@ -175,8 +228,9 @@ export const ExpensesView: React.FC = () => {
             </div>
 
             <div className="flex flex-col gap-1 sm:col-span-2">
-              <label className="text-xs font-bold text-slate-700">ملاحظة إضافية (اختياري)</label>
+              <label htmlFor="expense-note" className="text-xs font-bold text-slate-700">ملاحظة إضافية (اختياري)</label>
               <input
+                id="expense-note"
                 type="text"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
@@ -215,6 +269,7 @@ export const ExpensesView: React.FC = () => {
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-slate-400">تصفية حسب البند:</span>
             <select
+              aria-label="تصفية حسب البند"
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
               className="bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg text-xs font-semibold text-slate-700"
@@ -257,7 +312,7 @@ export const ExpensesView: React.FC = () => {
                   <td className="py-3 px-3 text-slate-400">{exp.note || '-'}</td>
                   <td className="py-3 px-3 text-center">
                     <button
-                      onClick={() => deleteExpense(exp.id)}
+                      onClick={() => setDeleteTarget(exp)}
                       className="p-1 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-lg transition"
                       title="حذف المصروف"
                       type="button"
@@ -279,6 +334,54 @@ export const ExpensesView: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Delete confirmation. An in-app dialog, not a native confirm(): a native
+          dialog cannot be styled and is blocked in some PWA contexts. */}
+      {deleteTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="تأكيد حذف المصروف"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+        >
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-5 py-4 flex items-center gap-3 border-b border-slate-100">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[20px]">warning</span>
+              </div>
+              <h3 className="font-bold text-sm text-slate-800">حذف المصروف</h3>
+            </div>
+
+            <div className="px-5 py-4">
+              <p className="text-xs text-slate-600 leading-6">
+                هل تريد حذف مصروف «{deleteTarget.title}» بقيمة{' '}
+                <span className="font-bold font-num">
+                  {formatCurrency(deleteTarget.amount, settings.currency)}
+                </span>{' '}
+                نهائياً؟ سيؤثر ذلك على صافي الربح ولا يمكن التراجع عن هذا الإجراء.
+              </p>
+            </div>
+
+            <div className="px-5 py-3.5 bg-slate-50 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="flex-1 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={isDeleting}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isDeleting ? 'جارٍ الحذف...' : 'تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

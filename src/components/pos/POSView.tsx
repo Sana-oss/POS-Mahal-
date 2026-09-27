@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
 import { playSound } from '../../lib/audio';
-import { calculateCartSummary, formatCurrency, validateStock } from '../../lib/calculations';
+import { calculateCartSummary, formatCurrency, roundCurrency, validateStock } from '../../lib/calculations';
 import { useStore } from '../../hooks/useStore';
-import { CartItem, Customer, Product, Sale } from '../../types';
+import { useCart } from '../../hooks/useCart';
+import { cartStore } from '../../lib/cartStore';
+import { CartQuantityInput } from './CartQuantityInput';
+import { Customer, Product, Sale } from '../../types';
 
 interface POSViewProps {
   onOpenScanner: () => void;
@@ -20,10 +23,12 @@ export const POSView: React.FC<POSViewProps> = ({
   scannedBarcodeToProcess,
   onClearScannedBarcode,
 }) => {
-  const { state, executeSale, addCustomer } = useStore();
+  const { state, executeSale, addCustomer, addProduct } = useStore();
   const { products, categories, customers, settings, sales } = state;
 
-  const [cart, setCart] = useState<CartItem[]>([]);
+  // The cart lives in the in-memory cart store so a half-finished sale survives
+  // navigating away from the POS screen
+  const [cart, setCart] = useCart();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [paymentMode, setPaymentMode] = useState<'cash' | 'debt'>('cash');
@@ -37,13 +42,28 @@ export const POSView: React.FC<POSViewProps> = ({
   const [newCustName, setNewCustName] = useState('');
   const [newCustPhone, setNewCustPhone] = useState('');
   const [newCustLimit, setNewCustLimit] = useState('150');
+  const [customerError, setCustomerError] = useState<string | null>(null);
+  const [isCreatingCustomer, setIsCreatingCustomer] = useState(false);
 
   // Manual General Item Modal
   const [showManualItemModal, setShowManualItemModal] = useState(false);
   const [manualItemName, setManualItemName] = useState('');
   const [manualItemPrice, setManualItemPrice] = useState('');
+  const [manualItemCost, setManualItemCost] = useState('');
+  const [manualItemQty, setManualItemQty] = useState('1');
+  const [manualItemError, setManualItemError] = useState<string | null>(null);
+  const [isAddingManualItem, setIsAddingManualItem] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Synchronous re-entrancy latch for checkout.
+  // `isProcessing` is React state, so a second Ctrl+Enter within the same tick
+  // would read a stale `false` and fire a second rpc_execute_sale - producing a
+  // duplicate invoice, a double stock deduction and a doubled debt balance.
+  // The `disabled` prop on the confirm button does not help here because the
+  // keyboard shortcut calls handleConfirmSale directly. A ref is written
+  // synchronously, so the duplicate is rejected before any request goes out.
+  const isSubmittingRef = useRef(false);
 
   // Cart summary
   const summary = useMemo(() => calculateCartSummary(cart), [cart]);
@@ -87,8 +107,13 @@ export const POSView: React.FC<POSViewProps> = ({
   const addProductToCart = (product: Product, quantityToAdd: number = 1) => {
     setErrorMessage(null);
 
-    const existingIndex = cart.findIndex((item) => item.product.id === product.id);
-    const currentQtyInCart = existingIndex >= 0 ? cart[existingIndex].quantity : 0;
+    // Read the live cart from the store rather than the `cart` closure. Two
+    // rapid taps on the same tile (the normal scanner-gun speed) both used to
+    // read the same stale snapshot, so the second increment overwrote the first
+    // and a unit silently vanished from the sale.
+    const liveCart = cartStore.getSnapshot();
+    const existingIndex = liveCart.findIndex((item) => item.product.id === product.id);
+    const currentQtyInCart = existingIndex >= 0 ? liveCart[existingIndex].quantity : 0;
     const targetQty = currentQtyInCart + quantityToAdd;
 
     // Validate Stock
@@ -104,46 +129,59 @@ export const POSView: React.FC<POSViewProps> = ({
     const unitPrice = product.selling_price;
     const unitCost = product.average_cost > 0 ? product.average_cost : product.purchase_price;
 
-    if (existingIndex >= 0) {
-      const updatedCart = [...cart];
-      const newQty = updatedCart[existingIndex].quantity + quantityToAdd;
-      updatedCart[existingIndex] = {
-        ...updatedCart[existingIndex],
-        quantity: newQty,
-        total_price: Math.round(newQty * unitPrice * 100) / 100,
-        total_cost: Math.round(newQty * unitCost * 100) / 100,
-        profit: Math.round((newQty * unitPrice - newQty * unitCost) * 100) / 100,
-      };
-      setCart(updatedCart);
-    } else {
-      setCart((prev) => [
+    // Functional update: the new quantity is derived from whatever the store
+    // holds at apply time, so concurrent adds accumulate instead of clobbering.
+    setCart((prev) => {
+      const idx = prev.findIndex((item) => item.product.id === product.id);
+      if (idx >= 0) {
+        const newQty = prev[idx].quantity + quantityToAdd;
+        const updated = [...prev];
+        updated[idx] = {
+          ...prev[idx],
+          quantity: newQty,
+          total_price: roundCurrency(newQty * unitPrice),
+          total_cost: roundCurrency(newQty * unitCost),
+          profit: roundCurrency(newQty * unitPrice - newQty * unitCost),
+        };
+        return updated;
+      }
+      return [
         ...prev,
         {
           product,
           quantity: quantityToAdd,
           unit_price: unitPrice,
           unit_cost: unitCost,
-          total_price: Math.round(quantityToAdd * unitPrice * 100) / 100,
-          total_cost: Math.round(quantityToAdd * unitCost * 100) / 100,
-          profit: Math.round((quantityToAdd * unitPrice - quantityToAdd * unitCost) * 100) / 100,
+          total_price: roundCurrency(quantityToAdd * unitPrice),
+          total_cost: roundCurrency(quantityToAdd * unitCost),
+          profit: roundCurrency(quantityToAdd * unitPrice - quantityToAdd * unitCost),
         },
-      ]);
-    }
+      ];
+    });
   };
 
   // Update Cart Quantity
   const updateCartQuantity = (productId: string, delta: number) => {
     setErrorMessage(null);
-    const item = cart.find((i) => i.product.id === productId);
+    // Live snapshot for the guard; the mutation recomputes from the store's
+    // current value so two same-tick clicks accumulate instead of both writing
+    // the same target quantity.
+    const item = cartStore.getSnapshot().find((i) => i.product.id === productId);
     if (!item) return;
 
-    const newQty = item.quantity + delta;
-    if (newQty <= 0) {
+    // Validate against the CURRENT catalogue, not the Product snapshot frozen
+    // into the cart line when the item was added. Otherwise a restock or a
+    // concurrent sale elsewhere in the app is invisible here, and the cashier
+    // only discovers it as a server error after pressing confirm.
+    const live = products.find((p) => p.id === productId);
+    const available = live ? live.stock_quantity : item.product.stock_quantity;
+
+    if (item.quantity + delta <= 0) {
       removeCartItem(productId);
       return;
     }
 
-    const check = validateStock(newQty, item.product.stock_quantity);
+    const check = validateStock(item.quantity + delta, available);
     if (!check.valid) {
       playSound('warning');
       setErrorMessage(`"${item.product.name}": ${check.message}`);
@@ -152,17 +190,57 @@ export const POSView: React.FC<POSViewProps> = ({
 
     playSound('click');
     setCart((prev) =>
-      prev.map((i) => {
-        if (i.product.id === productId) {
-          return {
+      prev.flatMap((i) => {
+        if (i.product.id !== productId) return [i];
+        const newQty = i.quantity + delta;
+        if (newQty <= 0) return [];
+        return [
+          {
             ...i,
             quantity: newQty,
-            total_price: Math.round(newQty * i.unit_price * 100) / 100,
-            total_cost: Math.round(newQty * i.unit_cost * 100) / 100,
-            profit: Math.round((newQty * i.unit_price - newQty * i.unit_cost) * 100) / 100,
-          };
-        }
-        return i;
+            total_price: roundCurrency(newQty * i.unit_price),
+            total_cost: roundCurrency(newQty * i.unit_cost),
+            profit: roundCurrency(newQty * i.unit_price - newQty * i.unit_cost),
+          },
+        ];
+      })
+    );
+  };
+
+  /**
+   * Commit an absolute quantity for a cart line, from the editable quantity
+   * field. Fractional values are allowed so weighed goods ('كجم') can be sold at
+   * the precision they were purchased at.
+   */
+  const setCartQuantity = (productId: string, nextQuantity: number) => {
+    setErrorMessage(null);
+
+    // Validate against the live catalogue, not the Product snapshot frozen into
+    // the cart line when the item was added.
+    const live = products.find((p) => p.id === productId);
+    const available = live ? live.stock_quantity : cartStore.getSnapshot().find((i) => i.product.id === productId)?.product.stock_quantity ?? 0;
+
+    const check = validateStock(nextQuantity, available);
+    if (!check.valid) {
+      playSound('warning');
+      // validateStock types `message` as optional even though it is always set
+      // on the invalid branch.
+      setErrorMessage(check.message ?? 'الكمية المطلوبة غير متوفرة.');
+      return;
+    }
+
+    setCart((prev) =>
+      prev.flatMap((i) => {
+        if (i.product.id !== productId) return [i];
+        return [
+          {
+            ...i,
+            quantity: nextQuantity,
+            total_price: roundCurrency(nextQuantity * i.unit_price),
+            total_cost: roundCurrency(nextQuantity * i.unit_cost),
+            profit: roundCurrency(nextQuantity * i.unit_price - nextQuantity * i.unit_cost),
+          },
+        ];
       })
     );
   };
@@ -182,7 +260,12 @@ export const POSView: React.FC<POSViewProps> = ({
   };
 
   // Execute Sale
-  const handleConfirmSale = () => {
+  const handleConfirmSale = async () => {
+    // Guard first: a second submit while the first is still in flight is a
+    // no-op. Checked before the validation below so an impatient double-tap on
+    // an empty cart still gets the "cart is empty" message rather than silence.
+    if (isSubmittingRef.current) return;
+
     if (cart.length === 0) {
       setErrorMessage('السلة فارغة! الرجاء إضافة منتجات أولاً.');
       playSound('warning');
@@ -202,11 +285,37 @@ export const POSView: React.FC<POSViewProps> = ({
       return;
     }
 
+    // Pre-flight stock sweep against the live catalogue, accumulating per
+    // product so two lines of the same item are checked together. Without this
+    // the cashier only learns the sale is impossible from the server rejection
+    // after pressing confirm. The server remains authoritative - this is purely
+    // so the failure arrives in Arabic, before the invoice is attempted.
+    const requested = new Map<string, number>();
+    for (const line of cart) {
+      const product = products.find((p) => p.id === line.product.id);
+      if (!product) {
+        setErrorMessage(`المنتج "${line.product.name}" لم يعد موجوداً في المخزون.`);
+        playSound('warning');
+        return;
+      }
+      const total = (requested.get(product.id) ?? 0) + line.quantity;
+      const check = validateStock(total, product.stock_quantity);
+      if (!check.valid) {
+        setErrorMessage(`"${product.name}": ${check.message}`);
+        playSound('warning');
+        return;
+      }
+      requested.set(product.id, total);
+    }
+
+    // Latch before the first await so concurrent callers bail out.
+    isSubmittingRef.current = true;
+
     try {
       setIsProcessing(true);
       setErrorMessage(null);
 
-      const sale = executeSale({
+      const sale = await executeSale({
         items: cart.map((i) => ({ productId: i.product.id, quantity: i.quantity })),
         paymentMethod: paymentMode,
         customerId: paymentMode === 'debt' ? selectedCustomerId : null,
@@ -233,17 +342,24 @@ export const POSView: React.FC<POSViewProps> = ({
       setErrorMessage(msg);
       playSound('error');
     } finally {
+      isSubmittingRef.current = false;
       setIsProcessing(false);
     }
   };
 
   // Quick Customer Creation
-  const handleCreateCustomer = (e: React.FormEvent) => {
+  const handleCreateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newCustName.trim()) return;
+    if (!newCustName.trim()) {
+      setCustomerError('اسم العميل مطلوب.');
+      return;
+    }
+
+    setIsCreatingCustomer(true);
+    setCustomerError(null);
 
     try {
-      const created = addCustomer({
+      const created = await addCustomer({
         name: newCustName.trim(),
         phone: newCustPhone.trim(),
         credit_limit: parseFloat(newCustLimit) || 150,
@@ -254,37 +370,77 @@ export const POSView: React.FC<POSViewProps> = ({
       setNewCustName('');
       setNewCustPhone('');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      alert(msg);
+      // Surfaced inline rather than with alert(), which cannot be styled and is
+      // blocked in some PWA contexts.
+      setCustomerError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsCreatingCustomer(false);
     }
   };
 
   // Add Manual Custom Item (Without barcode)
-  const handleAddManualItem = (e: React.FormEvent) => {
+  //
+  // Registers a REAL product rather than pushing a virtual object into the
+  // cart. The previous version fabricated `id: 'custom-' + Date.now()` and
+  // `cost = price * 0.7`, which meant the line could never be checked out in
+  // cloud mode (the id is not a uuid, so cloudSync rejected it), and in local
+  // mode it booked an invented cost of goods sold. It also claimed
+  // `stock_quantity: 9999`, which inflated the dashboard's inventory valuation
+  // by 9999x the cost of the item.
+  //
+  // The PRD supports products without barcodes, so the feature stays - the cost
+  // is now typed by the owner, and stock is the real quantity being sold. Once
+  // it hits zero the item is restocked through the normal purchase flow.
+  const handleAddManualItem = async (e: React.FormEvent) => {
     e.preventDefault();
     const price = parseFloat(manualItemPrice);
-    if (!manualItemName.trim() || isNaN(price) || price <= 0) return;
+    const cost = parseFloat(manualItemCost);
+    const qty = parseInt(manualItemQty, 10);
 
-    // Create virtual product in cart
-    const virtualProduct: Product = {
-      id: 'custom-' + Date.now(),
-      name: manualItemName.trim(),
-      barcode: '',
-      category_id: 'cat-8',
-      selling_price: price,
-      purchase_price: price * 0.7,
-      average_cost: price * 0.7,
-      stock_quantity: 9999, // Unmetered custom item
-      minimum_stock: 0,
-      unit: 'حبة',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+    if (!manualItemName.trim() || isNaN(price) || price <= 0) {
+      setManualItemError('يرجى إدخال اسم الصنف وسعر بيع صحيح.');
+      return;
+    }
+    if (isNaN(cost) || cost < 0) {
+      setManualItemError('يرجى إدخال سعر تكلفة صحيح.');
+      return;
+    }
+    if (isNaN(qty) || qty <= 0) {
+      setManualItemError('يرجى إدخال كمية أكبر من الصفر.');
+      return;
+    }
 
-    addProductToCart(virtualProduct, 1);
-    setShowManualItemModal(false);
-    setManualItemName('');
-    setManualItemPrice('');
+    setIsAddingManualItem(true);
+    setManualItemError(null);
+
+    try {
+      const created = await addProduct({
+        name: manualItemName.trim(),
+        barcode: '',
+        category_id: '',
+        purchase_price: cost,
+        average_cost: cost,
+        selling_price: price,
+        stock_quantity: qty,
+        minimum_stock: 0,
+        unit: 'حبة',
+      });
+
+      // Stock was just created for exactly this quantity, so the guard in
+      // addProductToCart passes. A stale cached catalogue must not reject it.
+      addProductToCart({ ...created, stock_quantity: qty }, qty);
+
+      setShowManualItemModal(false);
+      setManualItemName('');
+      setManualItemPrice('');
+      setManualItemCost('');
+      setManualItemQty('1');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setManualItemError(msg);
+    } finally {
+      setIsAddingManualItem(false);
+    }
   };
 
   // Keyboard Shortcuts Listener (F1, F2, Enter)
@@ -296,9 +452,18 @@ export const POSView: React.FC<POSViewProps> = ({
       } else if (e.key === 'F1') {
         e.preventDefault();
         searchInputRef.current?.focus();
+      } else if (e.altKey && e.key.toLowerCase() === 's') {
+        // Alt+S jumps to the search box, as the placeholder advertises
+        e.preventDefault();
+        searchInputRef.current?.focus();
       } else if (e.key === 'Enter' && e.ctrlKey) {
         e.preventDefault();
         handleConfirmSale();
+      } else if (e.key === 'F7') {
+        // Advertised on the "إضافة صنف عام / يدوي" button.
+        e.preventDefault();
+        setManualItemError(null);
+        setShowManualItemModal(true);
       }
     };
 
@@ -641,6 +806,16 @@ export const POSView: React.FC<POSViewProps> = ({
                 </div>
               </div>
 
+              {/* Advisory only, by design.
+                  credit_limit is an app addition, not part of the PRD: section 20
+                  defines `customers` as id / name / balance / created_at with no
+                  limit at all. Enforcing it in the UI, in store.executeSale and in
+                  rpc_execute_sale would risk refusing a sale the owner needs to
+                  complete, so the limit only informs the cashier via this badge.
+
+                  If a hard limit is ever wanted it must be enforced in
+                  rpc_execute_sale, not here - the browser check is cosmetic and
+                  the anon key is public. */}
               {selectedCustomer && (
                 <div className="flex items-center justify-between text-[11px] text-slate-500 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200">
                   <span>سقف الدين المسموح: {selectedCustomer.credit_limit} {settings.currency}</span>
@@ -674,9 +849,13 @@ export const POSView: React.FC<POSViewProps> = ({
                     >
                       -
                     </button>
-                    <span className="w-7 text-center font-bold text-xs text-slate-800 font-num">
-                      {item.quantity}
-                    </span>
+                    <CartQuantityInput
+                      productId={item.product.id}
+                      value={item.quantity}
+                      max={products.find((p) => p.id === item.product.id)?.stock_quantity ?? item.product.stock_quantity}
+                      onCommit={setCartQuantity}
+                      onInvalid={setErrorMessage}
+                    />
                     <button
                       type="button"
                       onClick={() => updateCartQuantity(item.product.id, 1)}
@@ -747,9 +926,11 @@ export const POSView: React.FC<POSViewProps> = ({
                   type="button"
                   onClick={() => {
                     setPaymentMode('debt');
-                    if (!selectedCustomerId && customers.length > 0) {
-                      setSelectedCustomerId(customers[0].id);
-                    }
+                    // Deliberately does NOT auto-select a customer. It used to
+                    // pick customers[0] - an arbitrary row in cache order - which
+                    // silently booked the debt against a stranger if the cashier
+                    // did not notice. handleConfirmSale already refuses a debt
+                    // sale with no customer, so forcing the choice is safe.
                   }}
                   className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
                     paymentMode === 'debt'
@@ -865,7 +1046,7 @@ export const POSView: React.FC<POSViewProps> = ({
 
             <form onSubmit={handleCreateCustomer} className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label>
+                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label> id="f-1"
                 <input
                   type="text"
                   value={newCustName}
@@ -878,7 +1059,7 @@ export const POSView: React.FC<POSViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">رقم الهاتف للتواصل</label>
+                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">رقم الهاتف للتواصل</label> id="f-2"
                 <input
                   type="text"
                   value={newCustPhone}
@@ -890,9 +1071,9 @@ export const POSView: React.FC<POSViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">سقف الائتمان المسموح</label>
+                <label htmlFor="f-3" className="text-xs font-bold text-slate-700">سقف الائتمان المسموح</label> id="f-3"
                 <input
-                  type="number"
+                  type="number" step="0.01"
                   value={newCustLimit}
                   onChange={(e) => setNewCustLimit(e.target.value)}
                   className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-left"
@@ -900,19 +1081,30 @@ export const POSView: React.FC<POSViewProps> = ({
                 />
               </div>
 
+              {customerError && (
+                <p className="text-xs font-bold text-rose-600 bg-rose-50 rounded-lg px-2.5 py-2">
+                  {customerError}
+                </p>
+              )}
+
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowAddCustomerModal(false)}
-                  className="flex-1 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold"
+                  disabled={isCreatingCustomer}
+                  onClick={() => {
+                    setShowAddCustomerModal(false);
+                    setCustomerError(null);
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold disabled:opacity-60"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm"
+                  disabled={isCreatingCustomer}
+                  className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  حفظ وتحديده
+                  {isCreatingCustomer ? 'جارٍ الحفظ...' : 'حفظ وتحديده'}
                 </button>
               </div>
             </form>
@@ -939,7 +1131,7 @@ export const POSView: React.FC<POSViewProps> = ({
 
             <form onSubmit={handleAddManualItem} className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">اسم الصنف أو الوصف *</label>
+                <label htmlFor="f-4" className="text-xs font-bold text-slate-700">اسم الصنف أو الوصف *</label> id="f-4"
                 <input
                   type="text"
                   value={manualItemName}
@@ -951,25 +1143,76 @@ export const POSView: React.FC<POSViewProps> = ({
                 />
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">سعر البيع *</label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    step="0.25"
-                    min="0.1"
-                    value={manualItemPrice}
-                    onChange={(e) => setManualItemPrice(e.target.value)}
-                    placeholder="0.00"
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-left focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 pl-8"
-                    dir="ltr"
-                    required
-                  />
-                  <span className="absolute left-2.5 top-2 text-[10px] font-bold text-slate-400">
-                    {settings.currency}
-                  </span>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+            <label htmlFor="pos-manual-selling" className="text-xs font-bold text-slate-700">سعر البيع *</label>
+            <div className="relative">
+              <input
+                id="pos-manual-selling"
+                type="number"
+                      step="0.01"
+                      min="0.1"
+                      value={manualItemPrice}
+                      onChange={(e) => setManualItemPrice(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-left focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 pl-8"
+                      dir="ltr"
+                      required
+                    />
+                    <span className="absolute left-2.5 top-2 text-[10px] font-bold text-slate-400">
+                      {settings.currency}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+            <label htmlFor="pos-manual-cost" className="text-xs font-bold text-slate-700">سعر التكلفة *</label>
+            <div className="relative">
+              <input
+                id="pos-manual-cost"
+                type="number"
+                      step="0.01"
+                      min="0"
+                      value={manualItemCost}
+                      onChange={(e) => setManualItemCost(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-left focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 pl-8"
+                      dir="ltr"
+                      required
+                    />
+                    <span className="absolute left-2.5 top-2 text-[10px] font-bold text-slate-400">
+                      {settings.currency}
+                    </span>
+                  </div>
                 </div>
               </div>
+
+              <div className="flex flex-col gap-1">
+                <label htmlFor="f-5" className="text-xs font-bold text-slate-700">الكمية *</label> id="f-5"
+                <input
+                  type="number"
+                  // A weighed line may be under 1 (0.5 kg), so the floor matches
+                  // the NUMERIC(10,3) quantity columns rather than 1.
+                  min="0.001"
+                  step="0.001"
+                  value={manualItemQty}
+                  onChange={(e) => setManualItemQty(e.target.value)}
+                  className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-left focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  dir="ltr"
+                  required
+                />
+              </div>
+
+              <p className="text-[10px] text-slate-500 leading-4 bg-slate-50 rounded-lg px-2.5 py-2">
+                سيُحفظ الصنف في المخزون باسمه وسعر تكلفته. عند نفاد الكمية يمكنك
+                إعادة تعبئته من صفحة المشتريات.
+              </p>
+
+              {manualItemError && (
+                <p className="text-xs font-bold text-rose-600 bg-rose-50 rounded-lg px-2.5 py-2">
+                  {manualItemError}
+                </p>
+              )}
 
               <div className="flex gap-2 pt-2">
                 <button
@@ -981,9 +1224,10 @@ export const POSView: React.FC<POSViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-sm"
+                  disabled={isAddingManualItem}
+                  className="flex-1 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  إضافة للسلة
+                  {isAddingManualItem ? 'جارٍ الحفظ...' : 'إضافة للسلة'}
                 </button>
               </div>
             </form>

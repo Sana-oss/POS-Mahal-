@@ -12,12 +12,24 @@ import { CartItem } from '../types';
 /**
  * Calculates the new weighted average cost upon restocking a product.
  * Correctly handles: zero current stock, negative stock anomaly, first purchase, decimal numbers.
+ *
+ * This MUST stay in step with the identical formula in the Postgres RPC
+ * `rpc_execute_purchase` (supabase/migrations/0003_server_authoritative_pricing.sql).
+ * The two run in different storage modes, so a divergence here shows up as the
+ * UI announcing one average cost while the database stores another.
+ *
+ * @param currentPurchasePrice the product's stored `purchase_price`. Used as the
+ *   fallback when `currentAverageCost` is 0 or less, because that is what the
+ *   SQL substitutes. Falling back to `purchaseUnitCost` instead (the previous
+ *   behaviour) made a 10-unit buy at 2.00 preview as 2.00 where the database
+ *   wrote 3.50 for a product whose stored purchase price was 5.00.
  */
 export function calculateAverageCost(
   currentStock: number,
   currentAverageCost: number,
   purchaseQuantity: number,
-  purchaseUnitCost: number
+  purchaseUnitCost: number,
+  currentPurchasePrice: number
 ): number {
   if (purchaseQuantity <= 0) {
     return currentAverageCost;
@@ -28,7 +40,8 @@ export function calculateAverageCost(
     return roundCurrency(purchaseUnitCost);
   }
 
-  const currentTotalCost = currentStock * (currentAverageCost > 0 ? currentAverageCost : purchaseUnitCost);
+  const fallbackCost = currentPurchasePrice > 0 ? currentPurchasePrice : purchaseUnitCost;
+  const currentTotalCost = currentStock * (currentAverageCost > 0 ? currentAverageCost : fallbackCost);
   const additionalCost = purchaseQuantity * purchaseUnitCost;
   const totalStock = currentStock + purchaseQuantity;
 
@@ -113,6 +126,43 @@ export function calculateCartSummary(items: CartItem[]): {
  */
 export function roundCurrency(value: number): number {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Rounds a quantity to 3 decimal places, matching the NUMERIC(10,3) columns that
+ * store stock and item quantities in Postgres.
+ *
+ * Cloud mode is safe from float drift because the database rounds on write. The
+ * local-only store keeps everything in JavaScript, where repeated subtraction
+ * drifts: 0.1 + 0.2 === 0.30000000000000004, so a fractional stock figure could
+ * render as "0.30000000000000004" in the inventory list. Rounding at every stock
+ * mutation keeps the two storage modes presenting the same number.
+ */
+export function roundQuantity(value: number): number {
+  return Math.round((Number(value) + Number.EPSILON) * 1000) / 1000;
+}
+
+/**
+ * Derives a customer's opening balance from their current balance and their
+ * recorded movements.
+ *
+ * `customers.balance` is authoritative, but the opening figure the cashier typed
+ * when creating the customer is not stored separately - it only survives as the
+ * difference. Without this, a statement of credit sales and payments cannot be
+ * reconciled with the balance shown above it.
+ *
+ * A NEGATIVE result means the movements exceed the recorded balance, i.e. the
+ * underlying rows are inconsistent. It is returned as-is rather than clamped,
+ * because hiding it would conceal the inconsistency.
+ */
+export function deriveOpeningBalance(
+  currentBalance: number,
+  creditSaleTotals: number[],
+  paymentAmounts: number[]
+): number {
+  const fromSales = creditSaleTotals.reduce((acc, v) => acc + v, 0);
+  const fromPayments = paymentAmounts.reduce((acc, v) => acc + v, 0);
+  return roundCurrency(currentBalance - fromSales + fromPayments);
 }
 
 /**

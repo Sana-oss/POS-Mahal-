@@ -1,5 +1,6 @@
 import React from 'react';
 import { useStore } from '../../hooks/useStore';
+import { useAuth } from '../auth/AuthProvider';
 
 interface SidebarProps {
   currentTab: string;
@@ -7,7 +8,7 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onNavigate }) => {
-  const { session } = useStore();
+  const { profile, signOut, mode } = useAuth();
 
   const navItems = [
     { id: 'dashboard', label: 'الرئيسية', icon: 'storefront' },
@@ -33,9 +34,20 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onNavigate }) => {
               <span className="text-[11px] text-slate-400">بقالة وتجزئة</span>
             </div>
           </div>
-          <div className="flex items-center gap-1 px-2 py-0.5 bg-teal-50 text-teal-700 border border-teal-200/60 rounded-full text-[11px] font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
-            متصل
+          <div
+            className={`flex items-center gap-1 px-2 py-0.5 border rounded-full text-[11px] font-semibold ${
+              mode === 'cloud'
+                ? 'bg-teal-50 text-teal-700 border-teal-200/60'
+                : 'bg-amber-50 text-amber-700 border-amber-200/60'
+            }`}
+            title={mode === 'cloud' ? 'متصل بحساب سحابي' : 'وضع محلي - البيانات على هذا الجهاز فقط'}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                mode === 'cloud' ? 'bg-teal-500 animate-pulse' : 'bg-amber-500'
+              }`}
+            ></span>
+            {mode === 'cloud' ? 'متصل' : 'محلي'}
           </div>
         </div>
 
@@ -88,21 +100,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onNavigate }) => {
       <div className="p-3 m-3 bg-slate-50 border border-slate-200/70 rounded-2xl flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-xl bg-slate-200 text-slate-700 flex items-center justify-center font-bold text-sm">
-            {session?.name ? session.name.charAt(0) : 'س'}
+            {profile?.full_name ? profile.full_name.charAt(0) : 'س'}
           </div>
           <div className="flex flex-col">
-            <span className="text-xs font-bold text-slate-800 truncate">الوردية الصباحية</span>
-            <span className="text-[10px] text-slate-400">منذ 07:00 ص</span>
+            <span className="text-xs font-bold text-slate-800 truncate">{profile?.full_name || 'مدير'}</span>
+            <span className="text-[10px] text-slate-400">{profile?.role === 'owner' ? 'المالك' : 'كاشير'}</span>
           </div>
         </div>
-        <button
-          onClick={() => onNavigate('settings')}
-          className="p-1.5 text-slate-400 hover:text-teal-600 hover:bg-white rounded-lg transition"
-          title="قفل أو تغيير الوردية"
-          type="button"
-        >
-          <span className="material-symbols-outlined text-[18px]">lock_clock</span>
-        </button>
+        {mode === 'cloud' && (
+          <button
+            onClick={signOut}
+            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-white rounded-lg transition"
+            title="تسجيل الخروج"
+            type="button"
+          >
+            <span className="material-symbols-outlined text-[18px]">lock_clock</span>
+          </button>
+        )}
       </div>
     </aside>
   );

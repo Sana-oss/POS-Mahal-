@@ -1,6 +1,9 @@
 import React from 'react';
+import { Cloud, Loader2 } from 'lucide-react';
 import { useStore } from '../../hooks/useStore';
+import { useSyncStatus } from '../../hooks/useSyncStatus';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
+import { useAuth } from '../auth/AuthProvider';
 
 interface HeaderProps {
   onOpenScanner: () => void;
@@ -9,7 +12,9 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onOpenScanner, onNavigate }) => {
-  const { state, session } = useStore();
+  const { state } = useStore();
+  const { profile, mode } = useAuth();
+  const sync = useSyncStatus();
   const settings = state.settings;
 
   return (
@@ -32,6 +37,39 @@ export const Header: React.FC<HeaderProps> = ({ onOpenScanner, onNavigate }) => 
           <span className="text-slate-500 text-xs">{settings.branch_name}</span>
         </div>
 
+        {/* Cloud sync indicator: tells the cashier the register is writing to the DB.
+            Three states, not two. A failed write leaves `pending` back at 0 while
+            `state` is 'error', so branching on `pending` alone showed the reassuring
+            "synced" badge immediately after a write that had been rejected. */}
+        {mode === 'cloud' && (
+          <div
+            className={`hidden md:flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-xl border text-slate-500 ${
+              sync.state === 'error'
+                ? 'border-rose-200 bg-rose-50 text-rose-700'
+                : 'border-slate-200/60 bg-slate-50'
+            }`}
+            role="status"
+            title={sync.error ?? undefined}
+          >
+            {sync.pending > 0 ? (
+              <>
+                <Loader2 size={13} className="animate-spin" />
+                <span>جاري الحفظ في السحابة...</span>
+              </>
+            ) : sync.state === 'error' ? (
+              <>
+                <Cloud size={13} className="text-rose-600" />
+                <span>تعذر الحفظ في السحابة</span>
+              </>
+            ) : (
+              <>
+                <Cloud size={13} className="text-teal-600" />
+                <span>متزامن مع السحابة</span>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Quick Barcode Scanner button */}
         <button
           onClick={onOpenScanner}
@@ -49,12 +87,25 @@ export const Header: React.FC<HeaderProps> = ({ onOpenScanner, onNavigate }) => 
         {/* Install PWA button */}
         <PWAInstallButton className="hidden sm:flex" />
 
-        {/* Sync status */}
+        {/* Storage status: cloud account vs. local-only */}
         <div className="hidden md:flex flex-col text-left pl-2">
           <span className="text-[11px] text-slate-400 leading-none">حالة النظام</span>
-          <span className="text-xs font-semibold text-teal-600 flex items-center gap-1 mt-0.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
-            جاهز ومحفوظ
+          <span
+            className={`text-xs font-semibold flex items-center gap-1 mt-0.5 ${
+              mode === 'cloud' ? 'text-teal-600' : 'text-amber-600'
+            }`}
+            title={
+              mode === 'cloud'
+                ? 'متصل بحساب سحابي'
+                : 'البيانات محفوظة على هذا الجهاز فقط (وضع محلي)'
+            }
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                mode === 'cloud' ? 'bg-teal-500 animate-pulse' : 'bg-amber-500'
+              }`}
+            ></span>
+            {mode === 'cloud' ? 'جاهز ومحفوظ' : 'حفظ محلي'}
           </span>
         </div>
 
@@ -70,20 +121,22 @@ export const Header: React.FC<HeaderProps> = ({ onOpenScanner, onNavigate }) => 
           <span className="material-symbols-outlined text-[20px]">insights</span>
         </button>
 
-        {/* User Profile */}
-        <div
+        {/* User Profile. A real button, not a clickable div: the div had no role and
+            no keyboard handler, so settings were unreachable without a mouse. */}
+        <button
+          type="button"
           onClick={() => onNavigate('settings')}
-          className="flex items-center gap-2 p-1 pl-2 rounded-xl hover:bg-slate-100 cursor-pointer transition select-none"
+          className="flex items-center gap-2 p-1 pl-2 rounded-xl hover:bg-slate-100 transition select-none text-right"
           title="إعدادات الحساب والمتجر"
         >
           <div className="w-8 h-8 rounded-full bg-teal-600 text-white flex items-center justify-center font-bold text-xs shadow-xs ring-2 ring-teal-100">
-            {session?.name ? session.name.charAt(0) : 'م'}
+            {profile?.full_name ? profile.full_name.charAt(0) : 'م'}
           </div>
           <div className="hidden sm:flex flex-col text-right">
-            <span className="text-xs font-bold text-slate-800 leading-none">{session?.name || 'أبو أحمد'}</span>
-            <span className="text-[10px] text-slate-400 mt-0.5">مدير المتجر</span>
+            <span className="text-xs font-bold text-slate-800 leading-none">{profile?.full_name || 'المستخدم'}</span>
+            <span className="text-[10px] text-slate-400 mt-0.5">{profile?.role === 'owner' ? 'المالك' : 'كاشير'}</span>
           </div>
-        </div>
+        </button>
       </div>
     </header>
   );

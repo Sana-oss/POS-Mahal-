@@ -4,7 +4,7 @@
  * for small grocery and food stores.
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { MobileNav } from './components/layout/MobileNav';
@@ -22,11 +22,37 @@ import { AddProductModal } from './components/inventory/AddProductModal';
 import { ThermalReceiptModal } from './components/pos/ThermalReceiptModal';
 import { ToastContainer, ToastMessage } from './components/common/Toast';
 import { useStore } from './hooks/useStore';
+import { isSupabaseConfigured } from './lib/supabase';
+import { bootstrapFromCloud, refreshFromCloud } from './lib/dataSource';
+import { useSyncStatus } from './hooks/useSyncStatus';
+import { useCart } from './hooks/useCart';
+import { calculateCartSummary } from './lib/calculations';
 import { Product, Sale } from './types';
+import { useAuth } from './components/auth/AuthProvider';
+import { LoginView } from './components/auth/LoginView';
+import { AlertTriangle, CloudOff, Loader2, RefreshCw } from 'lucide-react';
 
 export default function App() {
+  const { session, loading: authLoading, mode, shopId } = useAuth();
   const { state } = useStore();
+  const sync = useSyncStatus();
+  const [cart] = useCart();
   const [currentTab, setCurrentTab] = useState<string>('pos');
+
+  // Cloud bootstrap: pull the whole shop into the local cache once we know
+  // which shop this session belongs to. The cache (and therefore every screen)
+  // is empty until this resolves, so a failed sync can never show stale or
+  // demo data as if it were real.
+  useEffect(() => {
+    if (mode !== 'cloud' || !session || !shopId) return;
+    bootstrapFromCloud(shopId).catch(() => {
+      /* the sync status carries the message and App renders the retry screen */
+    });
+  }, [mode, session?.user?.id, shopId]);
+
+  // Badge for the mobile bottom nav. The cart now survives tab switches, so this
+  // stays accurate from every screen.
+  const cartCount = calculateCartSummary(cart).totalItemsCount;
 
   // Modals
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -40,6 +66,23 @@ export default function App() {
 
   // Toast notifications
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Global keyboard shortcuts: F1 jumps to the POS screen and F2 opens the camera
+  // scanner. These mirror the hints advertised on the sidebar and header buttons.
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (event.key === 'F1') {
+        event.preventDefault();
+        setCurrentTab('pos');
+      } else if (event.key === 'F2') {
+        event.preventDefault();
+        setIsScannerOpen(true);
+      }
+    };
+
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, []);
 
   const addToast = (message: string, type: ToastMessage['type'] = 'success') => {
     const id = 'toast-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6);
@@ -85,6 +128,62 @@ export default function App() {
     setProductToRestock(product);
     setCurrentTab('purchases');
   };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center">
+        <Loader2 className="w-10 h-10 animate-spin text-teal-500" />
+      </div>
+    );
+  }
+
+  // The cloud sign-in wall only applies when Supabase is actually configured;
+  // otherwise the app runs local-only against localStorage.
+  if (isSupabaseConfigured && !session) {
+    return <LoginView />;
+  }
+
+  // Cloud gate: while the shop is being pulled (or when it failed) we must not
+  // render the POS on top of an empty/stale cache — that is how a cashier ends
+  // up selling against the wrong stock numbers.
+  if (mode === 'cloud' && session && sync.state !== 'ready') {
+    if (sync.state === 'error' || !shopId) {
+      return (
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6" dir="rtl">
+          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-xl p-7 text-center">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
+              <CloudOff size={28} />
+            </div>
+            <h1 className="mt-4 text-lg font-bold text-slate-900">تعذر تحميل بيانات المتجر</h1>
+            <p className="mt-2 text-sm text-slate-600 leading-6">
+              {shopId
+                ? (sync.error ?? 'حدث خطأ غير متوقع أثناء الاتصال بقاعدة البيانات.')
+                : 'لم يتم العثور على متجر مرتبط بهذا الحساب. تأكد من تسجيل الدخول بالحساب الصحيح أو راجع مالك المتجر.'}
+            </p>
+            {shopId && (
+              <button
+                onClick={() => refreshFromCloud().catch(() => undefined)}
+                className="mt-5 inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition"
+              >
+                <RefreshCw size={16} />
+                إعادة المحاولة
+              </button>
+            )}
+            <p className="mt-4 text-xs text-slate-400">
+              لم يتم عرض أي بيانات تجريبية. كل حركة بيع تُحفظ في سحابة متجرك فقط بعد نجاح الاتصال.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center gap-3" dir="rtl">
+        <Loader2 className="w-10 h-10 animate-spin text-teal-500" />
+        <p className="text-sm text-slate-500">جاري تحميل بيانات المتجر من السحابة...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 flex flex-col antialiased selection:bg-teal-500 selection:text-white">
@@ -149,7 +248,7 @@ export default function App() {
       </div>
 
       {/* Mobile Bottom Navigation */}
-      <MobileNav currentTab={currentTab} onNavigate={setCurrentTab} />
+      <MobileNav currentTab={currentTab} onNavigate={setCurrentTab} cartCount={cartCount} />
 
       {/* Camera Barcode Scanner Modal */}
       <BarcodeScannerModal

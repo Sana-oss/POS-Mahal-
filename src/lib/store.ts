@@ -16,7 +16,7 @@ import {
   StockMovement,
   UserSession,
 } from '../types';
-import { calculateAverageCost, roundCurrency, validateStock } from './calculations';
+import { calculateAverageCost, roundCurrency, roundQuantity, validateStock } from './calculations';
 
 const STORAGE_KEY = 'mahall_pos_database_v1';
 const SESSION_KEY = 'mahall_pos_session_v1';
@@ -283,7 +283,7 @@ const defaultSales: Sale[] = [
     customer_name: 'عميل نقدي عام',
     received_amount: 10.00,
     change_amount: 0.50,
-    items_count: 5,
+    items_count: 7,
     created_at: new Date(Date.now() - 45 * 60000).toISOString(),
     items: [
       {
@@ -327,13 +327,16 @@ const defaultSales: Sale[] = [
   {
     id: 'sale-10841',
     invoice_no: 'INV-10841',
-    total_amount: 74.00,
-    total_cost: 59.50,
-    profit: 14.50,
+    // Header figures must equal the sum of the lines below (38.00+25.50+7.50
+    // and 31.00+20.40+6.00). The seed previously stated 74.00 / 59.50 / 14.50,
+    // so the receipt summary contradicted the items printed above it.
+    total_amount: 71.00,
+    total_cost: 57.40,
+    profit: 13.60,
     payment_method: 'debt',
     customer_id: 'cust-1',
     customer_name: 'أبو سالم (الجار)',
-    items_count: 3,
+    items_count: 9,
     created_at: new Date(Date.now() - 25 * 60000).toISOString(),
     items: [
       {
@@ -377,15 +380,16 @@ const defaultSales: Sale[] = [
   {
     id: 'sale-10842',
     invoice_no: 'INV-10842',
-    total_amount: 18.50,
-    total_cost: 13.90,
-    profit: 4.60,
+    // Matches the lines below: 3.00+10.00+3.50 and 2.00+8.20+2.70.
+    total_amount: 16.50,
+    total_cost: 12.90,
+    profit: 3.60,
     payment_method: 'cash',
     customer_id: null,
     customer_name: 'عميل نقدي عام',
     received_amount: 20.00,
     change_amount: 1.50,
-    items_count: 3,
+    items_count: 7,
     created_at: new Date(Date.now() - 5 * 60000).toISOString(),
     items: [
       {
@@ -434,7 +438,7 @@ const defaultPurchases: Purchase[] = [
     invoice_no: 'PUR-208',
     supplier_name: 'شركة المراعي للتوزيع',
     total_amount: 131.80,
-    items_count: 2,
+    items_count: 48,
     notes: 'توريد ألبان وأجبان أسبوعي',
     created_at: new Date(Date.now() - 24 * 3600000).toISOString(),
     items: [
@@ -623,6 +627,31 @@ class StoreManager {
     return this.state;
   }
 
+  // --- Internal immutable write helpers ---
+  // React consumers memoize on slice identity (e.g. useMemo(..., [products]))
+  // and useStore only shallow-copies the state object, so mutating an array in
+  // place leaves those memos stale. Every insert must hand back a brand-new
+  // array reference, and objects are replaced rather than patched.
+  private prependMovement(movement: StockMovement) {
+    this.state.stockMovements = [movement, ...this.state.stockMovements];
+  }
+
+  private prependSale(sale: Sale) {
+    this.state.sales = [sale, ...this.state.sales];
+  }
+
+  private prependPurchase(purchase: Purchase) {
+    this.state.purchases = [purchase, ...this.state.purchases];
+  }
+
+  private prependPayment(payment: CustomerPayment) {
+    this.state.customerPayments = [payment, ...this.state.customerPayments];
+  }
+
+  private prependExpense(expense: Expense) {
+    this.state.expenses = [expense, ...this.state.expenses];
+  }
+
   // --- Auth Session ---
   public getSession(): UserSession | null {
     if (typeof window === 'undefined') return defaultSession;
@@ -671,12 +700,12 @@ class StoreManager {
       updated_at: new Date().toISOString(),
     };
 
-    this.state.products.push(newProduct);
+    this.state.products = [...this.state.products, newProduct];
 
     // Record initial stock movement if quantity > 0
     if (newProduct.stock_quantity > 0) {
-      this.state.stockMovements.unshift({
-        id: 'sm-' + Date.now(),
+      this.prependMovement({
+        id: 'sm-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
         product_id: newProduct.id,
         product_name: newProduct.name,
         type: 'opening_stock',
@@ -713,8 +742,8 @@ class StoreManager {
     // If stock manually edited
     if (updates.stock_quantity !== undefined && updates.stock_quantity !== prevStock) {
       const diff = updates.stock_quantity - prevStock;
-      this.state.stockMovements.unshift({
-        id: 'sm-' + Date.now(),
+      this.prependMovement({
+        id: 'sm-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
         product_id: id,
         product_name: updated.name,
         type: 'adjustment',
@@ -725,7 +754,7 @@ class StoreManager {
       });
     }
 
-    this.state.products[idx] = updated;
+    this.state.products = this.state.products.map((p) => (p.id === id ? updated : p));
     this.notify();
     return updated;
   }
@@ -761,15 +790,25 @@ class StoreManager {
     }
 
     // 1. Stock Validation Step
+    // Quantities are accumulated per product before validating. The same product
+    // can legitimately appear on more than one cart line, and validating each
+    // line against the pre-transaction stock independently would let two lines
+    // of 20 pass against a stock of 28 - after which the deduction loop below
+    // drives inventory negative. The Postgres RPC was never affected because it
+    // re-reads the locked row inside the same loop that validates.
+    const requestedByProduct = new Map<string, number>();
+
     for (const item of params.items) {
       const product = this.getProductById(item.productId);
       if (!product) {
         throw new Error(`المنتج غير موجود في قاعدة البيانات.`);
       }
-      const check = validateStock(item.quantity, product.stock_quantity);
+      const totalRequested = (requestedByProduct.get(item.productId) ?? 0) + item.quantity;
+      const check = validateStock(totalRequested, product.stock_quantity);
       if (!check.valid) {
         throw new Error(`المنتج "${product.name}": ${check.message}`);
       }
+      requestedByProduct.set(item.productId, totalRequested);
     }
 
     // 2. Prepare Sale & Freeze unit_cost
@@ -806,13 +845,23 @@ class StoreManager {
         profit: lineProfit,
       });
 
-      // Deduct stock
-      const newStock = product.stock_quantity - item.quantity;
-      product.stock_quantity = newStock;
-      product.updated_at = new Date().toISOString();
+      // Deduct stock (immutably: new product object + new products array so
+      // React memos keyed on `products` recompute).
+      // Rounded to NUMERIC(10,3) precision: cloud mode gets this from the
+      // database, and without it local mode drifts on fractional stock
+      // (0.1 + 0.2 === 0.30000000000000004) and can display it.
+      const newStock = roundQuantity(product.stock_quantity - item.quantity);
+      const updatedProduct: Product = {
+        ...product,
+        stock_quantity: newStock,
+        updated_at: new Date().toISOString(),
+      };
+      this.state.products = this.state.products.map((p) =>
+        p.id === updatedProduct.id ? updatedProduct : p
+      );
 
       // Record stock movement
-      this.state.stockMovements.unshift({
+      this.prependMovement({
         id: 'sm-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
         product_id: product.id,
         product_name: product.name,
@@ -843,19 +892,28 @@ class StoreManager {
       customer_name: customer ? customer.name : 'عميل نقدي عام',
       received_amount: received,
       change_amount: change,
+      // Exact sum of the line quantities, not floored. The column is
+      // NUMERIC(10,3) (migration 0007) so a 2.5 kg sale records 2.5. This mirrors
+      // rpc_execute_sale's `items_count = v_total_units`.
       items_count: saleItems.reduce((acc, i) => acc + i.quantity, 0),
       notes: params.notes,
       created_at: new Date().toISOString(),
       items: saleItems,
     };
 
-    // 3. Update customer balance if debt
+    // 3. Update customer balance if debt (immutably, so `customers` memos refresh)
     if (params.paymentMethod === 'debt' && customer) {
-      customer.balance = roundCurrency(customer.balance + totalAmount);
-      customer.updated_at = new Date().toISOString();
+      const updatedCustomer: Customer = {
+        ...customer,
+        balance: roundCurrency(customer.balance + totalAmount),
+        updated_at: new Date().toISOString(),
+      };
+      this.state.customers = this.state.customers.map((c) =>
+        c.id === updatedCustomer.id ? updatedCustomer : c
+      );
     }
 
-    this.state.sales.unshift(newSale);
+    this.prependSale(newSale);
     this.notify();
     return newSale;
   }
@@ -868,6 +926,23 @@ class StoreManager {
   }): Purchase {
     if (!params.items || params.items.length === 0) {
       throw new Error('يرجى إضافة صنف واحد على الأقل للمشتريات.');
+    }
+
+    // Validate every line before mutating anything.
+    // rpc_execute_purchase raises on both of these, so without the same checks
+    // here the two storage modes disagree: in local-only mode a negative
+    // quantity would have drained stock and re-weighted average_cost using a
+    // negative divisor, and a zero quantity would have written a junk ledger row.
+    for (const item of params.items) {
+      if (!(item.quantity > 0)) {
+        throw new Error('الكمية الموردة يجب أن تكون أكبر من الصفر.');
+      }
+      if (!(item.unitCost >= 0)) {
+        throw new Error('سعر شراء الوحدة لا يمكن أن يكون سالباً.');
+      }
+      if (!this.getProductById(item.productId)) {
+        throw new Error('المنتج المحدد غير موجود.');
+      }
     }
 
     const purchaseId = 'pur-' + Date.now();
@@ -892,23 +967,32 @@ class StoreManager {
         total_cost: itemTotal,
       });
 
-      // Recalculate Weighted Average Cost
+      // Recalculate Weighted Average Cost. `product.purchase_price` is the
+      // fallback the Postgres RPC also uses, keeping local and cloud identical.
       const newAverageCost = calculateAverageCost(
         product.stock_quantity,
         product.average_cost,
         item.quantity,
-        item.unitCost
+        item.unitCost,
+        product.purchase_price
       );
 
-      // Increase stock
-      const newStock = product.stock_quantity + item.quantity;
-      product.stock_quantity = newStock;
-      product.average_cost = newAverageCost;
-      product.purchase_price = item.unitCost;
-      product.updated_at = new Date().toISOString();
+      // Increase stock (immutably: new product object + new products array).
+      // Rounded to NUMERIC(10,3) precision, as on the sale path.
+      const newStock = roundQuantity(product.stock_quantity + item.quantity);
+      const updatedProduct: Product = {
+        ...product,
+        stock_quantity: newStock,
+        average_cost: newAverageCost,
+        purchase_price: item.unitCost,
+        updated_at: new Date().toISOString(),
+      };
+      this.state.products = this.state.products.map((p) =>
+        p.id === updatedProduct.id ? updatedProduct : p
+      );
 
       // Create stock movement
-      this.state.stockMovements.unshift({
+      this.prependMovement({
         id: 'sm-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
         product_id: product.id,
         product_name: product.name,
@@ -926,13 +1010,14 @@ class StoreManager {
       invoice_no: invoiceNo,
       supplier_name: params.supplierName || 'مورّد عام',
       total_amount: roundCurrency(totalAmount),
+      // Exact sum, not floored: NUMERIC(10,3) since migration 0007.
       items_count: purchaseItems.reduce((acc, i) => acc + i.quantity, 0),
       notes: params.notes,
       created_at: new Date().toISOString(),
       items: purchaseItems,
     };
 
-    this.state.purchases.unshift(newPurchase);
+    this.prependPurchase(newPurchase);
     this.notify();
     return newPurchase;
   }
@@ -943,7 +1028,7 @@ class StoreManager {
     if (!trimmedName) throw new Error('اسم العميل مطلوب.');
 
     const newCustomer: Customer = {
-      id: 'cust-' + Date.now(),
+      id: 'cust-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       name: trimmedName,
       phone: data.phone || '',
       balance: roundCurrency(data.initial_balance || 0),
@@ -953,7 +1038,7 @@ class StoreManager {
       updated_at: new Date().toISOString(),
     };
 
-    this.state.customers.push(newCustomer);
+    this.state.customers = [...this.state.customers, newCustomer];
     this.notify();
     return newCustomer;
   }
@@ -973,11 +1058,17 @@ class StoreManager {
       throw new Error(`مبلغ السداد (${params.amount} د.ل) أكبر من إجمالي الدين الحالي (${previousBalance} د.ل). لا يمكن أن يصبح الرصيد سالباً.`);
     }
 
-    customer.balance = newBalance;
-    customer.updated_at = new Date().toISOString();
+    const updatedCustomer: Customer = {
+      ...customer,
+      balance: newBalance,
+      updated_at: new Date().toISOString(),
+    };
+    this.state.customers = this.state.customers.map((c) =>
+      c.id === updatedCustomer.id ? updatedCustomer : c
+    );
 
     const payment: CustomerPayment = {
-      id: 'pay-' + Date.now(),
+      id: 'pay-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       customer_id: customer.id,
       customer_name: customer.name,
       amount: roundCurrency(params.amount),
@@ -987,7 +1078,7 @@ class StoreManager {
       created_at: new Date().toISOString(),
     };
 
-    this.state.customerPayments.unshift(payment);
+    this.prependPayment(payment);
     this.notify();
     return payment;
   }
@@ -998,7 +1089,7 @@ class StoreManager {
     if (params.amount <= 0) throw new Error('المبلغ يجب أن يكون أكبر من الصفر.');
 
     const expense: Expense = {
-      id: 'exp-' + Date.now(),
+      id: 'exp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       title: params.title.trim(),
       amount: roundCurrency(params.amount),
       category: params.category || 'أخرى',
@@ -1006,7 +1097,7 @@ class StoreManager {
       created_at: new Date().toISOString(),
     };
 
-    this.state.expenses.unshift(expense);
+    this.prependExpense(expense);
     this.notify();
     return expense;
   }
@@ -1019,6 +1110,109 @@ class StoreManager {
   // --- Settings ---
   public updateSettings(settings: Partial<Settings>) {
     this.state.settings = { ...this.state.settings, ...settings };
+    this.notify();
+  }
+
+  // --- Cloud Bridge -------------------------------------------------------
+  // In cloud mode the RPC layer (services/cloudSync.ts) owns the truth and
+  // pushes the rows Postgres computed back into this cache through the appliers
+  // below. They are pure state merges: no id is invented here and no cost/stock
+  // math is redone locally, so the UI can only ever render server values.
+
+  /** Replace the whole cache with a fresh cloud snapshot (right after sign-in). */
+  public hydrateFromCloud(snapshot: Partial<DatabaseState>) {
+    this.state = {
+      products: snapshot.products ?? [],
+      categories: snapshot.categories ?? [],
+      sales: snapshot.sales ?? [],
+      purchases: snapshot.purchases ?? [],
+      customers: snapshot.customers ?? [],
+      customerPayments: snapshot.customerPayments ?? [],
+      expenses: snapshot.expenses ?? [],
+      stockMovements: snapshot.stockMovements ?? [],
+      settings: snapshot.settings ?? this.state.settings,
+    };
+    this.notify();
+  }
+
+  /** Replace whole slices with a post-mutation server pull. */
+  public applyCloudSlices(slices: Partial<DatabaseState>) {
+    (Object.keys(slices) as Array<keyof DatabaseState>).forEach((key) => {
+      const value = slices[key];
+      if (value === undefined) return;
+      if (key === 'settings') {
+        this.state.settings = value as Settings;
+      } else {
+        (this.state as unknown as Record<string, unknown>)[key] = value;
+      }
+    });
+    this.notify();
+  }
+
+  public upsertCloudProduct(product: Product) {
+    const exists = this.state.products.some((p) => p.id === product.id);
+    this.state.products = exists
+      ? this.state.products.map((p) => (p.id === product.id ? product : p))
+      : [...this.state.products, product];
+    this.notify();
+  }
+
+  public upsertCloudCustomer(customer: Customer) {
+    const exists = this.state.customers.some((c) => c.id === customer.id);
+    this.state.customers = exists
+      ? this.state.customers.map((c) => (c.id === customer.id ? customer : c))
+      : [...this.state.customers, customer];
+    this.notify();
+  }
+
+  public prependCloudSale(sale: Sale) {
+    this.prependSale(sale);
+    this.notify();
+  }
+
+  public prependCloudPurchase(purchase: Purchase) {
+    this.prependPurchase(purchase);
+    this.notify();
+  }
+
+  public prependCloudExpense(expense: Expense) {
+    this.prependExpense(expense);
+    this.notify();
+  }
+
+  public removeCloudProduct(id: string) {
+    this.state.products = this.state.products.filter((p) => p.id !== id);
+    this.notify();
+  }
+
+  public removeCloudExpense(id: string) {
+    this.state.expenses = this.state.expenses.filter((e) => e.id !== id);
+    this.notify();
+  }
+
+  public applyCloudSettings(settings: Settings) {
+    this.state.settings = { ...this.state.settings, ...settings };
+    this.notify();
+  }
+
+  /**
+   * Drop the cached cloud data (used on sign-out) so the next cashier never
+   * sees the previous shop's numbers, even offline. The cache is reset to an
+   * empty state instead of the demo seed: a real shop must never be mixed with
+   * sample products.
+   */
+  public clearPersistedData() {
+    this.state = {
+      products: [],
+      categories: [],
+      sales: [],
+      purchases: [],
+      customers: [],
+      customerPayments: [],
+      expenses: [],
+      stockMovements: [],
+      settings: this.state.settings,
+    };
     this.notify();
   }
 

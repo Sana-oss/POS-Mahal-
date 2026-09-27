@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { calculateAverageCost, formatArabicDate, formatCurrency } from '../../lib/calculations';
+import { calculateAverageCost, formatArabicDate, formatCurrency, roundCurrency } from '../../lib/calculations';
 import { useStore } from '../../hooks/useStore';
 import { Product } from '../../types';
 
@@ -31,7 +31,14 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
   const selectedProduct = products.find((p) => p.id === selectedProductId);
 
   // Dynamic Average Cost Preview
-  const qtyNum = parseInt(purchaseQty) || 0;
+  //
+  // parseFloat, not parseInt: purchase_items.quantity and products.stock_quantity
+  // are NUMERIC(10,3) in Postgres, so fractional stock is supported end to end.
+  // parseInt used to silently truncate here, which made the preview contradict
+  // the number in the input (typing 12.5 previewed as 12) while the same
+  // truncated value was what reached executePurchase. A shop selling produce by
+  // weight needs 2.5 kg, not 2.
+  const qtyNum = parseFloat(purchaseQty) || 0;
   const costNum = parseFloat(purchaseUnitCost) || 0;
 
   const previewNewAverageCost = selectedProduct
@@ -39,12 +46,15 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
         selectedProduct.stock_quantity,
         selectedProduct.average_cost,
         qtyNum,
-        costNum
+        costNum,
+        // Must match what rpc_execute_purchase substitutes, or this preview
+        // announces a different average cost than the database will store.
+        selectedProduct.purchase_price
       )
     : 0;
 
   const previewNewStock = selectedProduct ? selectedProduct.stock_quantity + qtyNum : 0;
-  const totalPurchaseCost = Math.round(qtyNum * costNum * 100) / 100;
+  const totalPurchaseCost = roundCurrency(qtyNum * costNum);
 
   const handleProductChange = (prodId: string) => {
     setSelectedProductId(prodId);
@@ -54,7 +64,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     }
   };
 
-  const handleConfirmPurchase = (e: React.FormEvent) => {
+  const handleConfirmPurchase = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setSuccessMessage(null);
@@ -73,7 +83,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     }
 
     try {
-      const purchase = executePurchase({
+      const purchase = await executePurchase({
         supplierName: supplierName.trim() || 'مورّد عام',
         notes: purchaseNotes.trim(),
         items: [
@@ -149,7 +159,12 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
               <span className="material-symbols-outlined text-[22px] text-teal-600">playlist_add</span>
               <span>تسجيل شحنة توريد بضاعة جديدة</span>
             </h2>
-            <span className="text-xs text-slate-400 font-num">فاتورة توريد #{209 + purchases.length}</span>
+            {/* No invoice number is shown here on purpose. The previous
+                `#{209 + purchases.length}` invented a sequential number that the
+                database never issues (rpc_execute_purchase mints a
+                timestamp+random PUR-... string), so the form header and the
+                success banner 60 lines below stated two different numbers for the
+                same purchase. The real number appears on the saved row. */}
           </div>
 
           {errorMessage && (
@@ -162,8 +177,9 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
             {/* Supplier & Product Choice */}
             <div className="md:col-span-6 flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">اسم المورّد / الشركة الموزعة *</label>
+                <label htmlFor="purchase-supplier" className="text-xs font-bold text-slate-700">اسم المورّد / الشركة الموزعة *</label>
                 <input
+                  id="purchase-supplier"
                   type="text"
                   value={supplierName}
                   onChange={(e) => setSupplierName(e.target.value)}
@@ -174,8 +190,9 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">اختيار المنتج لتوريده *</label>
+                <label htmlFor="purchase-product" className="text-xs font-bold text-slate-700">اختيار المنتج لتوريده *</label>
                 <select
+                  id="purchase-product"
                   value={selectedProductId}
                   onChange={(e) => handleProductChange(e.target.value)}
                   className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500"
@@ -191,10 +208,16 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">الكمية الموردة *</label>
+                  <label htmlFor="purchase-qty" className="text-xs font-bold text-slate-700">الكمية الموردة *</label>
                   <input
+                    id="purchase-qty"
                     type="number"
-                    min="1"
+                    min="0.001"
+                    // Matches the NUMERIC(10,3) quantity columns. The default
+                    // step of 1 made 12.5 a stepMismatch, so the browser refused
+                    // to submit a fractional restock even though the database
+                    // stores it happily.
+                    step="0.001"
                     value={purchaseQty}
                     onChange={(e) => setPurchaseQty(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-left focus:bg-white"
@@ -204,11 +227,12 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
                 </div>
 
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">سعر شراء القطعة (التكلفة) *</label>
+                  <label htmlFor="purchase-cost" className="text-xs font-bold text-slate-700">سعر شراء القطعة (التكلفة) *</label>
                   <div className="relative">
                     <input
+                      id="purchase-cost"
                       type="number"
-                      step="0.1"
+                      step="0.01"
                       min="0.05"
                       value={purchaseUnitCost}
                       onChange={(e) => setPurchaseUnitCost(e.target.value)}
@@ -224,8 +248,9 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">ملاحظات الفاتورة (اختياري)</label>
+                <label htmlFor="purchase-notes" className="text-xs font-bold text-slate-700">ملاحظات الفاتورة (اختياري)</label>
                 <input
+                  id="purchase-notes"
                   type="text"
                   value={purchaseNotes}
                   onChange={(e) => setPurchaseNotes(e.target.value)}
@@ -243,32 +268,50 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
                   <span>معاينة احتساب متوسط التكلفة والرصيد الجديد:</span>
                 </span>
 
+                {/*
+                  All four tiles render the same em-dash placeholder when no
+                  product is selected. They previously mixed a blank cell
+                  (`?.average_cost.toFixed(2)` on undefined), a hard `0` from
+                  `|| 0`, and a confident `0.00` for the same condition, which
+                  read as three different facts.
+                */}
                 <div className="grid grid-cols-2 gap-2 text-xs pt-1">
                   <div className="bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col">
                     <span className="text-[10px] text-slate-400">الرصيد الحالي بالمخزن</span>
                     <span className="font-bold text-slate-800 font-num text-sm mt-0.5">
-                      {selectedProduct?.stock_quantity || 0} {selectedProduct?.unit}
+                      {selectedProduct
+                        ? `${selectedProduct.stock_quantity} ${selectedProduct.unit}`
+                        : '—'}
                     </span>
                   </div>
 
                   <div className="bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col">
                     <span className="text-[10px] text-slate-400">الرصيد بعد التوريد</span>
                     <span className="font-bold text-emerald-700 font-num text-sm mt-0.5">
-                      {previewNewStock} {selectedProduct?.unit}
+                      {selectedProduct
+                        ? `${previewNewStock} ${selectedProduct.unit}`
+                        : '—'}
                     </span>
                   </div>
 
                   <div className="bg-white p-2.5 rounded-lg border border-slate-200 flex flex-col">
                     <span className="text-[10px] text-slate-400">متوسط التكلفة السابق</span>
                     <span className="font-bold text-slate-600 font-num text-sm mt-0.5">
-                      {selectedProduct?.average_cost.toFixed(2)} {settings.currency}
+                      {selectedProduct
+                        ? `${formatCurrency(selectedProduct.average_cost, settings.currency)}`
+                        : '—'}
                     </span>
+                    {selectedProduct && selectedProduct.average_cost <= 0 && (
+                      <span className="text-[10px] text-amber-600 mt-0.5">غير محسوب بعد</span>
+                    )}
                   </div>
 
                   <div className="bg-white p-2.5 rounded-lg border border-teal-300 flex flex-col">
                     <span className="text-[10px] text-teal-700 font-bold">متوسط التكلفة الجديد</span>
                     <span className="font-bold text-teal-800 font-num text-sm mt-0.5">
-                      {previewNewAverageCost.toFixed(2)} {settings.currency}
+                      {selectedProduct
+                        ? formatCurrency(previewNewAverageCost, settings.currency)
+                        : '—'}
                     </span>
                   </div>
                 </div>
@@ -276,7 +319,12 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
                 <div className="p-2.5 bg-teal-50 border border-teal-200 rounded-lg flex items-center justify-between text-xs">
                   <span className="font-bold text-teal-900">إجمالي قيمة الفاتورة:</span>
                   <span className="text-base font-extrabold text-teal-800 font-num">
-                    {formatCurrency(totalPurchaseCost, settings.currency)}
+                    {/* Also blank when nothing is selected: the quantity and cost
+                        inputs carry defaults, so this used to show a confident
+                        total (24 x 2.80 = 67.20) for a purchase that did not exist. */}
+                    {selectedProduct
+                      ? formatCurrency(totalPurchaseCost, settings.currency)
+                      : '—'}
                   </span>
                 </div>
               </div>
@@ -334,7 +382,7 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
                   <td className="py-3 px-3 text-slate-600">
                     {purchase.items.map((i) => `${i.product_name} (${i.quantity})`).join('، ')}
                   </td>
-                  <td className="py-3 px-3 font-num font-bold text-slate-700">{purchase.items_count} قطعة</td>
+                  <td className="py-3 px-3 font-num font-bold text-slate-700">{purchase.items_count} كمية</td>
                   <td className="py-3 px-3 font-bold font-num text-teal-800">
                     {formatCurrency(purchase.total_amount, settings.currency)}
                   </td>

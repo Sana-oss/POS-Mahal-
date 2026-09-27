@@ -1,4 +1,11 @@
 import React, { useState } from 'react';
+import {
+  BACKUP_ROW_LIMIT,
+  fetchFullSnapshot,
+  isBackupTruncated,
+  type BackupRowCounts,
+} from '../../services/cloudSync';
+import { getBoundShopId, isCloudActive } from '../../lib/dataSource';
 import { useStore } from '../../hooks/useStore';
 
 export const SettingsView: React.FC = () => {
@@ -13,38 +20,120 @@ export const SettingsView: React.FC = () => {
   const [currency, setCurrency] = useState(settings.currency);
   const [receiptFooter, setReceiptFooter] = useState(settings.receipt_footer);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateSettings({
-      shop_name: shopName.trim() || 'بقالة البركة والخير',
-      branch_name: branchName.trim() || 'الفرع الرئيسي',
-      owner_name: ownerName.trim() || 'أبو أحمد',
-      phone: phone.trim(),
-      address: address.trim(),
-      currency: currency.trim() || 'د.ل',
-      receipt_footer: receiptFooter.trim(),
-    });
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
+    setSaveError(null);
+
+    try {
+      setIsSaving(true);
+      await updateSettings({
+        shop_name: shopName.trim() || 'بقالة البركة والخير',
+        branch_name: branchName.trim() || 'الفرع الرئيسي',
+        owner_name: ownerName.trim() || 'أبو أحمد',
+        phone: phone.trim(),
+        address: address.trim(),
+        currency: currency.trim() || 'د.ل',
+        receipt_footer: receiptFooter.trim(),
+      });
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleExportBackup = () => {
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', dataStr);
-    downloadAnchor.setAttribute(
-      'download',
-      `mahall_pos_backup_${new Date().toISOString().slice(0, 10)}.json`
-    );
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
+  /**
+   * Download a JSON snapshot of the shop.
+   *
+   * In cloud mode this re-reads from Postgres with the history caps lifted
+   * rather than serialising the render cache. The cache is deliberately capped
+   * (400 sales, 200 purchases) to keep the POS responsive, so exporting it would
+   * have produced a file labelled "complete" that silently omitted the shop's
+   * older history.
+   */
+  const handleExportBackup = async () => {
+    setSaveError(null);
+    setSavedSuccess(false);
+    setIsExporting(true);
+
+    try {
+      let snapshot: typeof state;
+      let truncated = false;
+      let counts: BackupRowCounts | null = null;
+
+      if (isCloudActive()) {
+        const shopId = getBoundShopId();
+        if (!shopId) throw new Error('تعذر تحديد المتجر. أعد تحميل الصفحة ثم حاول مجدداً.');
+        snapshot = await fetchFullSnapshot(shopId, state.settings);
+        counts = {
+          products: snapshot.products.length,
+          sales: snapshot.sales.length,
+          purchases: snapshot.purchases.length,
+          customers: snapshot.customers.length,
+          customerPayments: snapshot.customerPayments.length,
+          stockMovements: snapshot.stockMovements.length,
+          expenses: snapshot.expenses.length,
+        };
+        truncated = isBackupTruncated(counts);
+      } else {
+        snapshot = state;
+      }
+
+      const payload = {
+        ...snapshot,
+        // Recorded so a future restore knows what this file is and when it was
+        // taken, rather than having to infer it from the rows.
+        __backup: {
+          app: 'Mahall POS',
+          version: 1,
+          exported_at: new Date().toISOString(),
+          mode: isCloudActive() ? 'cloud' : 'local',
+          shop_name: snapshot.settings.shop_name,
+          counts,
+          truncated,
+        },
+      };
+
+      const dataStr =
+        'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute('href', dataStr);
+      downloadAnchor.setAttribute(
+        'download',
+        `mahall_pos_backup_${new Date().toISOString().slice(0, 10)}.json`
+      );
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+
+      if (truncated) {
+        setSaveError(
+          `تم تنزيل النسخة، لكن أحد جداول البيانات تجاوز الحد الأقصى (${BACKUP_ROW_LIMIT.toLocaleString('en-US')} صف). قد لا تكون النسخة كاملة.`
+        );
+      } else {
+        setSavedSuccess(true);
+        setTimeout(() => setSavedSuccess(false), 4000);
+      }
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleImportBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    setSaveError(null);
+    setSavedSuccess(false);
 
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -54,23 +143,31 @@ export const SettingsView: React.FC = () => {
           localStorage.setItem('mahall_pos_database_v1', JSON.stringify(parsed));
           window.location.reload();
         } else {
-          alert('ملف النسخة الاحتياطية غير صالح.');
+          // Inline, not alert(): a native dialog cannot be styled and is
+          // blocked in some PWA contexts.
+          setSaveError('ملف النسخة الاحتياطية غير صالح.');
         }
       } catch {
-        alert('حدث خطأ أثناء قراءة ملف النسخة الاحتياطية.');
+        setSaveError('حدث خطأ أثناء قراءة ملف النسخة الاحتياطية.');
       }
     };
     reader.readAsText(file);
   };
 
   const handleResetData = () => {
-    if (
-      confirm(
-        'هل أنت متأكد من استعادة البيانات النموذجية الأولية؟ سيتم تحديث المنتجات والديون وحركات البيع التجريبية.'
-      )
-    ) {
+    // Destructive: replaces every product, debt and sale with the demo seed.
+    // The confirmation is a real dialog rather than a native confirm().
+    setResetOpen(true);
+  };
+
+  const confirmResetData = () => {
+    try {
       resetToDefault();
       window.location.reload();
+    } catch (err: unknown) {
+      // Cloud mode keeps the real shop data; the demo reset is local-only.
+      setResetOpen(false);
+      setSaveError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -91,8 +188,24 @@ export const SettingsView: React.FC = () => {
         </div>
       </div>
 
+      {/* role=alert / role=status: these appear asynchronously in response to a
+          user action, so a screen reader only announces them if they are live
+          regions. Plain divs were silently dropped. */}
+      {saveError && (
+        <div
+          role="alert"
+          className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-bold flex items-center gap-2"
+        >
+          <span className="material-symbols-outlined text-[18px]">error</span>
+          <span>{saveError}</span>
+        </div>
+      )}
+
       {savedSuccess && (
-        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-bold flex items-center gap-2">
+        <div
+          role="status"
+          className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-bold flex items-center gap-2"
+        >
           <span className="material-symbols-outlined text-[18px]">check_circle</span>
           <span>تم حفظ الإعدادات بنجاح!</span>
         </div>
@@ -107,7 +220,7 @@ export const SettingsView: React.FC = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-700">اسم المحل / البقالة *</label>
+            <label htmlFor="f-1" className="text-xs font-bold text-slate-700">اسم المحل / البقالة *</label> id="f-1"
             <input
               type="text"
               value={shopName}
@@ -118,7 +231,7 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-700">اسم الفرع</label>
+            <label htmlFor="f-2" className="text-xs font-bold text-slate-700">اسم الفرع</label> id="f-2"
             <input
               type="text"
               value={branchName}
@@ -128,7 +241,7 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-700">اسم صاحب المتجر / المدير</label>
+            <label htmlFor="f-3" className="text-xs font-bold text-slate-700">اسم صاحب المتجر / المدير</label> id="f-3"
             <input
               type="text"
               value={ownerName}
@@ -138,7 +251,7 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-700">رمز العملة (يظهر في الفواتير)</label>
+            <label htmlFor="f-4" className="text-xs font-bold text-slate-700">رمز العملة (يظهر في الفواتير)</label> id="f-4"
             <input
               type="text"
               value={currency}
@@ -148,7 +261,7 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-700">رقم هاتف المحل</label>
+            <label htmlFor="f-5" className="text-xs font-bold text-slate-700">رقم هاتف المحل</label> id="f-5"
             <input
               type="text"
               value={phone}
@@ -159,7 +272,7 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-slate-700">عنوان المتجر</label>
+            <label htmlFor="f-6" className="text-xs font-bold text-slate-700">عنوان المتجر</label> id="f-6"
             <input
               type="text"
               value={address}
@@ -170,7 +283,7 @@ export const SettingsView: React.FC = () => {
         </div>
 
         <div className="flex flex-col gap-1 pt-2">
-          <label className="text-xs font-bold text-slate-700">رسالة تذييل الفاتورة الحرارية (أسفل الإيصال)</label>
+          <label htmlFor="f-7" className="text-xs font-bold text-slate-700">رسالة تذييل الفاتورة الحرارية (أسفل الإيصال)</label> id="f-7"
           <textarea
             value={receiptFooter}
             onChange={(e) => setReceiptFooter(e.target.value)}
@@ -182,9 +295,10 @@ export const SettingsView: React.FC = () => {
         <div className="flex justify-end pt-2">
           <button
             type="submit"
-            className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-md shadow-teal-600/20 transition active:scale-95"
+            disabled={isSaving}
+            className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold shadow-md shadow-teal-600/20 transition active:scale-95"
           >
-            حفظ إعدادات المتجر
+            {isSaving ? 'جاري الحفظ في السحابة...' : 'حفظ إعدادات المتجر'}
           </button>
         </div>
       </form>
@@ -201,31 +315,51 @@ export const SettingsView: React.FC = () => {
             <div className="flex flex-col">
               <span className="text-xs font-bold text-slate-800">تصدير نسخة احتياطية من البيانات</span>
               <p className="text-[11px] text-slate-500 mt-1">
-                تنزيل ملف JSON يحتوي على كامل المنتجات، المخزون، سجل المبيعات، والديون لحفظها بأمان على هاتفك أو حاسوبك.
+                {isCloudActive()
+                  ? 'يتم تنزيل نسخة كاملة من قاعدة بيانات متجرك مباشرة، بدون حدود على عدد الفواتير أو الحركات.'
+                  : 'تنزيل ملف JSON يحتوي على كامل المنتجات، المخزون، سجل المبيعات، والديون لحفظها بأمان على هاتفك أو حاسوبك.'}
               </p>
             </div>
             <button
               onClick={handleExportBackup}
-              className="py-2.5 px-3 bg-white hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1.5 shadow-2xs transition"
+              disabled={isExporting}
+              className="py-2.5 px-3 bg-white hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1.5 shadow-2xs transition disabled:opacity-60 disabled:cursor-not-allowed"
               type="button"
             >
-              <span className="material-symbols-outlined text-[18px] text-teal-600">download</span>
-              <span>تحميل نسخة احتياطية (JSON)</span>
+              <span className="material-symbols-outlined text-[18px] text-teal-600">
+                {isExporting ? 'hourglass_top' : 'download'}
+              </span>
+              <span>{isExporting ? 'جارٍ تجهيز النسخة...' : 'تحميل نسخة احتياطية (JSON)'}</span>
             </button>
           </div>
 
+          {/* Restore is deliberately unavailable in cloud mode.
+              handleImportBackup writes to localStorage and reloads, but in cloud
+              mode bootstrapFromCloud immediately replaces the cache from Postgres,
+              so the file was discarded while the UI implied it had been restored.
+              The demo reset below is already blocked in cloud mode for the same
+              reason; these two controls are now consistent. */}
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between gap-3">
             <div className="flex flex-col">
               <span className="text-xs font-bold text-slate-800">استعادة بيانات من نسخة سابقة</span>
               <p className="text-[11px] text-slate-500 mt-1">
-                رفع ملف JSON تم تنزيله سابقاً لاستعادة قاعدة بيانات المتجر بالكامل.
+                {isCloudActive()
+                  ? 'غير متاح في وضع السحابة. بيانات متجرك محفوظة في قاعدة البيانات، واستعادة نسخة قد تمسح سجلات حقيقية. النسخ الاحتياطي متاح للتصدير فقط.'
+                  : 'رفع ملف JSON تم تنزيله سابقاً لاستعادة قاعدة بيانات المتجر بالكامل.'}
               </p>
             </div>
-            <label className="py-2.5 px-3 bg-white hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1.5 shadow-2xs transition cursor-pointer">
-              <span className="material-symbols-outlined text-[18px] text-indigo-600">upload_file</span>
-              <span>اختيار ملف النسخة الاحتياطية</span>
-              <input type="file" accept=".json" onChange={handleImportBackup} className="hidden" />
-            </label>
+            {isCloudActive() ? (
+              <div className="py-2.5 px-3 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-400 flex items-center justify-center gap-1.5 select-none">
+                <span className="material-symbols-outlined text-[18px]">lock</span>
+                <span>غير متاح في وضع السحابة</span>
+              </div>
+            ) : (
+              <label className="py-2.5 px-3 bg-white hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 flex items-center justify-center gap-1.5 shadow-2xs transition cursor-pointer">
+                <span className="material-symbols-outlined text-[18px] text-indigo-600">upload_file</span>
+                <span>اختيار ملف النسخة الاحتياطية</span>
+                <input type="file" accept=".json" onChange={handleImportBackup} className="hidden" />
+              </label>
+            )}
           </div>
         </div>
 
@@ -240,6 +374,44 @@ export const SettingsView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Destructive reset confirmation */}
+      {resetOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-5 py-4 flex items-center gap-3 border-b border-slate-100">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[20px]">warning</span>
+              </div>
+              <h3 className="font-bold text-sm text-slate-800">استعادة البيانات النموذجية</h3>
+            </div>
+
+            <div className="px-5 py-4">
+              <p className="text-xs text-slate-600 leading-6">
+                سيتم استبدال جميع المنتجات والديون وحركات البيع ببيانات نموذجية تجريبية.
+                لا يمكن التراجع عن هذا الإجراء.
+              </p>
+            </div>
+
+            <div className="px-5 py-3.5 bg-slate-50 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setResetOpen(false)}
+                className="flex-1 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                onClick={confirmResetData}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm"
+              >
+                تأكيد الاستعادة
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

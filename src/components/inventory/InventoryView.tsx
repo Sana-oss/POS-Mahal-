@@ -35,6 +35,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   const [editShelf, setEditShelf] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
 
+  // Archive/delete confirmation. Replaces a native confirm() dialog, which is
+  // unstyled, English-language and blocked in some PWA contexts.
+  const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   // Selected product
   const selectedProduct = useMemo(
     () => products.find((p) => p.id === selectedProductId) || products[0],
@@ -102,7 +108,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     setEditName(p.name);
     setEditBarcode(p.barcode || '');
     setEditSellingPrice(p.selling_price.toString());
-    setEditPurchasePrice(p.average_cost.toString());
+    setEditPurchasePrice(p.purchase_price.toString());
     setEditStockQuantity(p.stock_quantity.toString());
     setEditMinimumStock(p.minimum_stock.toString());
     setEditCategory(p.category_id);
@@ -111,13 +117,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     setEditError(null);
   };
 
-  const handleSaveEdit = (e: React.FormEvent) => {
+  const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingProduct) return;
 
     try {
       const sPrice = parseFloat(editSellingPrice);
-      const pPrice = parseFloat(editPurchasePrice) || editingProduct.average_cost;
+      const pPrice = parseFloat(editPurchasePrice) || editingProduct.purchase_price;
       const sQty = parseInt(editStockQuantity) || 0;
       const mStock = parseInt(editMinimumStock) || 0;
 
@@ -130,13 +136,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         return;
       }
 
-      updateProduct(editingProduct.id, {
+      // average_cost is deliberately NOT sent.
+      // It is a weighted average owned by purchases (see executePurchase), and
+      // it is the frozen unit_cost basis for every future sale's profit. Writing
+      // it from this form used to silently destroy the average on any cost edit,
+      // permanently skewing reported gross profit. A product that has never
+      // been purchased keeps average_cost = 0, and the sale path already falls
+      // back to purchase_price in that case, so nothing is lost.
+      await updateProduct(editingProduct.id, {
         name: editName.trim(),
         barcode: editBarcode.trim(),
         category_id: editCategory,
         selling_price: sPrice,
         purchase_price: pPrice,
-        average_cost: pPrice,
         stock_quantity: sQty,
         minimum_stock: mStock,
         unit: editUnit,
@@ -150,9 +162,20 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (confirm(`هل أنت متأكد من حذف المنتج "${name}" نهائياً من المخزون؟`)) {
-      deleteProduct(id);
+  const handleDelete = async (id: string, _name: string) => {
+    setDeleteError(null);
+    setIsDeleting(true);
+    try {
+      await deleteProduct(id);
+      setDeleteTarget(null);
+    } catch (err: unknown) {
+      // Cloud mode archives products that already have invoice or movement
+      // history; the database protects that history. A hard failure here is a
+      // real error, so it is surfaced in the dialog rather than a native alert.
+      const msg = err instanceof Error ? err.message : String(err);
+      setDeleteError(msg);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -405,7 +428,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         </td>
 
                         <td className="py-3 px-2 font-num font-semibold text-slate-600">
-                          {product.average_cost.toFixed(2)}
+                          {/* average_cost 0 means the cost was never entered. Left
+                              as a bare 0.00 it read like a real figure, and every
+                              sale of the product booked its full price as profit. */}
+                          {product.average_cost > 0 ? (
+                            product.average_cost.toFixed(2)
+                          ) : (
+                            <span
+                              className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5"
+                              title="لم تُحدَّد تكلفة الشراء. يُحسب ربح هذا الصنف ككامل سعر البيع حتى تُسجَّل أول عملية شراء."
+                            >
+                              تكلفة غير محددة
+                            </span>
+                          )}
                         </td>
 
                         <td className="py-3 px-2 font-num font-bold text-slate-900">
@@ -461,7 +496,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                               <span className="material-symbols-outlined text-[16px]">edit</span>
                             </button>
                             <button
-                              onClick={() => handleDelete(product.id, product.name)}
+                              onClick={() => {
+                                setDeleteError(null);
+                                setDeleteTarget(product);
+                              }}
                               className="p-1 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition"
                               title="حذف الصنف"
                               type="button"
@@ -650,9 +688,73 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         </div>
       </div>
 
+      {/* Delete / Archive Confirmation */}
+      {deleteTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="تأكيد حذف الصنف"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+        >
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-5 py-4 flex items-center gap-3 border-b border-slate-100">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[20px]">delete</span>
+              </div>
+              <h3 className="font-bold text-sm text-slate-800">حذف الصنف</h3>
+            </div>
+
+            <div className="px-5 py-4 flex flex-col gap-3">
+              <p className="text-xs text-slate-600 leading-6">
+                هل تريد حذف <span className="font-bold text-slate-900">"{deleteTarget.name}"</span> من
+                المخزون؟
+              </p>
+              <p className="text-[11px] text-slate-500 bg-slate-50 rounded-lg px-3 py-2 leading-5">
+                إذا كان الصنف مرتبطاً بفواتير أو حركات مخزون ف السابقة، سيتم
+                <span className="font-bold"> أرشفته </span>
+                بدل حذفه، حتى تبقى الفواتير القديمة صحيحة.
+              </p>
+
+              {deleteError && (
+                <p className="text-xs font-bold text-rose-600 bg-rose-50 rounded-lg px-3 py-2">
+                  {deleteError}
+                </p>
+              )}
+            </div>
+
+            <div className="px-5 py-3.5 bg-slate-50 flex gap-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteError(null);
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100 disabled:opacity-60"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => handleDelete(deleteTarget.id, deleteTarget.name)}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm disabled:opacity-60"
+              >
+                {isDeleting ? 'جارٍ الحذف...' : 'تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Product Modal */}
       {editingProduct && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="تعديل بيانات المنتج"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+        >
           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-teal-600 text-white px-5 py-3.5 flex items-center justify-between">
               <h3 className="font-bold text-sm">تعديل بيانات المنتج</h3>
@@ -669,7 +771,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               )}
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">اسم المنتج *</label>
+                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">اسم المنتج *</label> id="f-1"
                 <input
                   type="text"
                   value={editName}
@@ -680,7 +782,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">رقم الباركود</label>
+                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">رقم الباركود</label> id="f-2"
                 <input
                   type="text"
                   value={editBarcode}
@@ -692,10 +794,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">سعر البيع *</label>
+                  <label htmlFor="f-3" className="text-xs font-bold text-slate-700">سعر البيع *</label> id="f-3"
                   <input
                     type="number"
-                    step="0.25"
+                    step="0.01"
                     value={editSellingPrice}
                     onChange={(e) => setEditSellingPrice(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-left focus:bg-white"
@@ -704,23 +806,41 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">متوسط التكلفة</label>
+                  <label htmlFor="f-4" className="text-xs font-bold text-slate-700">سعر الشراء</label> id="f-4"
                   <input
                     type="number"
-                    step="0.25"
+                    step="0.01"
                     value={editPurchasePrice}
                     onChange={(e) => setEditPurchasePrice(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-left focus:bg-white"
                     dir="ltr"
                   />
                 </div>
+                <div className="flex flex-col gap-1">
+                  {/* Derived value: maintained by purchases, never hand-edited. */}
+                  <label className="text-xs font-bold text-slate-700">متوسط التكلفة (محسوب)</label>
+                  <div
+                    dir="ltr"
+                    title="يُحسب تلقائياً من المشتريات. لا يمكن تعديله يدوياً."
+                    className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-500 select-none"
+                  >
+                    {editingProduct && editingProduct.average_cost > 0
+                      ? editingProduct.average_cost.toFixed(2)
+                      : '—'}
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-4">
+                    يُحدَّث تلقائياً مع كل عملية شراء، وهو أساس حساب الربح.
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">المخزون الحالي (جرد يدوي)</label>
+                  <label htmlFor="f-5" className="text-xs font-bold text-slate-700">المخزون الحالي (جرد يدوي)</label> id="f-5"
                   <input
                     type="number"
+                    // A count, not money: stock_quantity is NUMERIC(10,3).
+                    step="0.001"
                     value={editStockQuantity}
                     onChange={(e) => setEditStockQuantity(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-left focus:bg-white"
@@ -728,9 +848,9 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">حد التنبيه بالنقص</label>
+                  <label htmlFor="f-6" className="text-xs font-bold text-slate-700">حد التنبيه بالنقص</label> id="f-6"
                   <input
-                    type="number"
+                    type="number" step="0.001"
                     value={editMinimumStock}
                     onChange={(e) => setEditMinimumStock(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-left focus:bg-white"
@@ -741,7 +861,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">القسم</label>
+                  <label htmlFor="f-7" className="text-xs font-bold text-slate-700">القسم</label> id="f-7"
                   <select
                     value={editCategory}
                     onChange={(e) => setEditCategory(e.target.value)}
@@ -755,7 +875,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </select>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">الوحدة</label>
+                  <label htmlFor="f-8" className="text-xs font-bold text-slate-700">الوحدة</label> id="f-8"
                   <input
                     type="text"
                     value={editUnit}
@@ -766,7 +886,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">موقع الرف بالمحل</label>
+                <label htmlFor="f-9" className="text-xs font-bold text-slate-700">موقع الرف بالمحل</label> id="f-9"
                 <input
                   type="text"
                   value={editShelf}

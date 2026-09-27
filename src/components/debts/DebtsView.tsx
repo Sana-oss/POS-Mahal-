@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatArabicDate, formatCurrency } from '../../lib/calculations';
+import { formatArabicDate, formatCurrency, deriveOpeningBalance } from '../../lib/calculations';
 import { useStore } from '../../hooks/useStore';
 import { Customer } from '../../types';
 
@@ -39,19 +39,30 @@ export const DebtsView: React.FC = () => {
     });
   }, [customers, searchQuery]);
 
-  // Aggregated totals
+  // Aggregated totals.
+  // Both figures come from the same filtered list on purpose. Summing every
+  // balance while counting only positive ones made the header total a net figure
+  // that disagreed with the customer count beside it, and a customer holding
+  // credit (a negative balance, reachable through the initial_balance field)
+  // silently reduced the debts the shop is owed.
+  const debtors = useMemo(() => customers.filter((c) => c.balance > 0), [customers]);
+
   const totalOutstandingDebts = useMemo(() => {
-    return customers.reduce((acc, c) => acc + c.balance, 0);
-  }, [customers]);
+    return debtors.reduce((acc, c) => acc + c.balance, 0);
+  }, [debtors]);
 
-  const debtorCount = useMemo(() => {
-    return customers.filter((c) => c.balance > 0).length;
-  }, [customers]);
+  const debtorCount = debtors.length;
 
-  // Purchases on credit for selected customer
+  // Purchases on credit for selected customer.
+  // Filtered on payment_method as well as customer_id: only a DEBT sale moves
+  // the balance, so a cash sale that happened to carry a customer would
+  // otherwise be listed here as a credit movement of +total_amount that never
+  // reached the balance.
   const customerSales = useMemo(() => {
     if (!selectedCustomer) return [];
-    return sales.filter((s) => s.customer_id === selectedCustomer.id);
+    return sales.filter(
+      (s) => s.customer_id === selectedCustomer.id && s.payment_method === 'debt'
+    );
   }, [sales, selectedCustomer]);
 
   // Payments for selected customer
@@ -60,8 +71,23 @@ export const DebtsView: React.FC = () => {
     return customerPayments.filter((p) => p.customer_id === selectedCustomer.id);
   }, [customerPayments, selectedCustomer]);
 
+  /**
+   * Opening balance: whatever the cashier entered as "دين سابق افتتاحي" when the
+   * customer was created. It is part of `balance` but is not stored separately,
+   * so it has to be derived. Without showing it, the statement below cannot be
+   * reconciled with the balance card.
+   */
+  const openingBalance = useMemo(() => {
+    if (!selectedCustomer) return 0;
+    return deriveOpeningBalance(
+      selectedCustomer.balance,
+      customerSales.map((s) => s.total_amount),
+      customerLedgerPayments.map((p) => p.amount)
+    );
+  }, [selectedCustomer, customerSales, customerLedgerPayments]);
+
   // Handle add customer
-  const handleCreateCustomer = (e: React.FormEvent) => {
+  const handleCreateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
     setCustError(null);
     if (!newCustName.trim()) {
@@ -70,7 +96,7 @@ export const DebtsView: React.FC = () => {
     }
 
     try {
-      const created = addCustomer({
+      const created = await addCustomer({
         name: newCustName.trim(),
         phone: newCustPhone.trim(),
         credit_limit: parseFloat(newCustLimit) || 200,
@@ -90,7 +116,7 @@ export const DebtsView: React.FC = () => {
   };
 
   // Handle payment
-  const handleRecordPayment = (e: React.FormEvent) => {
+  const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     setPayError(null);
     if (!selectedCustomer) return;
@@ -109,7 +135,7 @@ export const DebtsView: React.FC = () => {
     }
 
     try {
-      recordDebtPayment({
+      await recordDebtPayment({
         customerId: selectedCustomer.id,
         amount: amt,
         note: payNote.trim() || 'سداد نقدي لحساب الدين',
@@ -221,7 +247,7 @@ export const DebtsView: React.FC = () => {
                         {cust.balance.toFixed(2)} {settings.currency}
                       </span>
                       <span className="text-[10px] text-slate-400 font-num">
-                        سقف: {cust.credit_limit} {settings.currency}
+                        سقف: {cust.credit_limit.toFixed(2)} {settings.currency}
                       </span>
                     </div>
                   </div>
@@ -312,6 +338,31 @@ export const DebtsView: React.FC = () => {
                 </h3>
 
                 <div className="flex flex-col gap-2 max-h-[350px] overflow-y-auto">
+                  {/* Opening balance, so the movements below reconcile with the card */}
+                  {openingBalance !== 0 && (
+                    <div className="p-3 rounded-xl bg-slate-100 border border-slate-300 flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-slate-300 text-slate-700 flex items-center justify-center shrink-0">
+                          <span className="material-symbols-outlined text-[18px]">history</span>
+                        </div>
+                        <div className="flex flex-col">
+                          {/* "رصيد افتتاحي" (opening balance) rather than
+                              "دين سابق" (prior debt): this is a derived plug that
+                              reconciles the movements to the balance card, and it
+                              can legitimately be negative if the stored rows are
+                              inconsistent. Calling it a debt would misdescribe it. */}
+                          <span className="font-bold text-slate-800">رصيد افتتاحي</span>
+                          <span className="text-[10px] text-slate-500">
+                            الفرق بين الرصيد المسجل والحركات أدناه
+                          </span>
+                        </div>
+                      </div>
+                      <span className="font-bold font-num text-slate-700 text-sm">
+                        {formatCurrency(openingBalance, settings.currency)}
+                      </span>
+                    </div>
+                  )}
+
                   {/* Credit Purchases */}
                   {customerSales.map((sale) => (
                     <div
@@ -324,7 +375,7 @@ export const DebtsView: React.FC = () => {
                         </div>
                         <div className="flex flex-col">
                           <span className="font-bold text-slate-800">
-                            شراء آجل فاتورة #{sale.invoice_no} ({sale.items_count} قطعة)
+                            شراء آجل فاتورة #{sale.invoice_no} ({sale.items_count} كمية)
                           </span>
                           <span className="text-[10px] text-slate-400">
                             {formatArabicDate(sale.created_at)}
@@ -416,11 +467,12 @@ export const DebtsView: React.FC = () => {
 
             <form onSubmit={handleRecordPayment} className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">المبلغ المقبوض *</label>
+                <label htmlFor="debt-payment-amount" className="text-xs font-bold text-slate-700">المبلغ المقبوض *</label>
                 <div className="relative">
                   <input
+                    id="debt-payment-amount"
                     type="number"
-                    step="0.5"
+                    step="0.01"
                     min="0.5"
                     max={selectedCustomer.balance}
                     value={payAmount}
@@ -438,7 +490,7 @@ export const DebtsView: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">ملاحظة أو سند (اختياري)</label>
+                <label htmlFor="f-1" className="text-xs font-bold text-slate-700">ملاحظة أو سند (اختياري)</label> id="f-1"
                 <input
                   type="text"
                   value={payNote}
@@ -493,7 +545,7 @@ export const DebtsView: React.FC = () => {
 
             <form onSubmit={handleCreateCustomer} className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label>
+                <label htmlFor="f-2" className="text-xs font-bold text-slate-700">الاسم الثلاثي أو اللقب المعروف *</label> id="f-2"
                 <input
                   type="text"
                   value={newCustName}
@@ -506,7 +558,7 @@ export const DebtsView: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">رقم الهاتف</label>
+                <label htmlFor="f-3" className="text-xs font-bold text-slate-700">رقم الهاتف</label> id="f-3"
                 <input
                   type="text"
                   value={newCustPhone}
@@ -519,9 +571,9 @@ export const DebtsView: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">سقف الائتمان</label>
+                  <label htmlFor="f-4" className="text-xs font-bold text-slate-700">سقف الائتمان</label> id="f-4"
                   <input
-                    type="number"
+                    type="number" step="0.01"
                     value={newCustLimit}
                     onChange={(e) => setNewCustLimit(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-left"
@@ -529,9 +581,9 @@ export const DebtsView: React.FC = () => {
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs font-bold text-slate-700">دين سابق افتتاحي</label>
+                  <label htmlFor="f-5" className="text-xs font-bold text-slate-700">دين سابق افتتاحي</label> id="f-5"
                   <input
-                    type="number"
+                    type="number" step="0.01"
                     value={newCustInitial}
                     onChange={(e) => setNewCustInitial(e.target.value)}
                     className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-left"
@@ -541,7 +593,7 @@ export const DebtsView: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-700">ملاحظات العميل</label>
+                <label htmlFor="f-6" className="text-xs font-bold text-slate-700">ملاحظات العميل</label> id="f-6"
                 <input
                   type="text"
                   value={newCustNotes}

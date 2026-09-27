@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { formatArabicDate, formatCurrency } from '../../lib/calculations';
 import { Sale, Settings } from '../../types';
 
@@ -13,6 +13,23 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   settings,
   onClose,
 }) => {
+  // F9 shortcut prints the receipt currently on screen, matching the
+  // "طباعة الإيصال (F9)" hint on the button. Declared before the early return so
+  // the hook order stays stable across renders.
+  useEffect(() => {
+    if (!sale) return;
+
+    const handlePrintShortcut = (event: KeyboardEvent) => {
+      if (event.key === 'F9') {
+        event.preventDefault();
+        window.print();
+      }
+    };
+
+    window.addEventListener('keydown', handlePrintShortcut);
+    return () => window.removeEventListener('keydown', handlePrintShortcut);
+  }, [sale]);
+
   if (!sale) return null;
 
   const handlePrint = () => {
@@ -30,6 +47,10 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           </div>
           <button
             onClick={onClose}
+            // Icon-only control: without a label a screen reader announces
+            // nothing at all, leaving no way to dismiss the receipt. Distinct
+            // from the footer's "إغلاق" so the two are not conflated.
+            aria-label="إغلاق الإيصال"
             className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center text-slate-300 hover:text-white"
             type="button"
           >
@@ -50,7 +71,17 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               {settings.address && <p className="text-[10px] text-slate-500 mt-0.5">{settings.address}</p>}
               {settings.phone && <p className="text-[10px] text-slate-500" dir="ltr">هاتف: {settings.phone}</p>}
               <div className="mt-2 text-[10px] bg-slate-100 py-1 rounded">
-                فاتورة مبيعات نقدية / ضريبية مبسطة
+                {/*
+                  A plain sales invoice, deliberately. The header used to read
+                  "فاتورة مبيعات نقدية / ضريبية مبسطة" (simplified tax invoice),
+                  but `tax_rate` is never applied to any total and is not even
+                  editable in Settings, so the slip claimed to be a tax document
+                  while showing no tax line at all. Reinstating the tax wording
+                  means computing tax end to end (settings field -> sale total ->
+                  receipt -> invoice numbering), which is a decision about what a
+                  shop is required to charge, not a labelling tweak.
+                */}
+                فاتورة مبيعات
               </div>
             </div>
 
@@ -103,8 +134,11 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             {/* Totals */}
             <div className="py-2.5 border-b border-dashed border-slate-300 space-y-1.5 text-xs">
               <div className="flex justify-between text-slate-600">
-                <span>عدد الأصناف:</span>
-                <span className="font-num">{sale.items_count} قطعة</span>
+                {/* "كمية" (quantity), not "قطعة" (pieces): the count is the exact
+                    sum of line quantities and is fractional for weighed goods,
+                    so 2.5 kg would otherwise be printed as "2.5 pieces". */}
+                <span>الكمية الإجمالية:</span>
+                <span className="font-num">{sale.items_count} كمية</span>
               </div>
               <div className="flex justify-between text-base font-bold text-slate-900 pt-1 border-t border-slate-200">
                 <span>صافي الفاتورة:</span>
