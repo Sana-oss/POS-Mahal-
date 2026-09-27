@@ -93,28 +93,31 @@ SELECT tablename, COUNT(*) AS policy_count,
 -- -----------------------------------------------------------------------------
 -- 6. Sales whose items_count disagrees with their lines
 --    The core integrity invariant. Expect ZERO rows.
+--    LEFT JOIN, not JOIN: an inner join would silently drop a sale that has no
+--    line items at all, which is precisely the fault this is looking for.
 -- -----------------------------------------------------------------------------
-SELECT s.invoice_no, s.items_count AS recorded, SUM(si.quantity) AS actual
+SELECT s.invoice_no, s.items_count AS recorded, COALESCE(SUM(si.quantity), 0) AS actual
   FROM sales s
-  JOIN sale_items si ON si.sale_id = s.id
+  LEFT JOIN sale_items si ON si.sale_id = s.id
  GROUP BY s.id, s.invoice_no, s.items_count
-HAVING s.items_count <> SUM(si.quantity);
+HAVING s.items_count <> COALESCE(SUM(si.quantity), 0);
 
 
 -- -----------------------------------------------------------------------------
 -- 7. Sales whose money columns disagree with their lines
 --    Catches a header that was never updated after its items were written.
---    Expect ZERO rows.
+--    LEFT JOIN for the same reason as section 6: a sale with no lines would
+--    otherwise be dropped instead of reported. Expect ZERO rows.
 -- -----------------------------------------------------------------------------
 SELECT s.invoice_no,
-       s.total_amount AS recorded_amount, SUM(si.total_price) AS lines_amount,
-       s.total_cost   AS recorded_cost,   SUM(si.total_cost) AS lines_cost,
+       s.total_amount AS recorded_amount, COALESCE(SUM(si.total_price), 0) AS lines_amount,
+       s.total_cost   AS recorded_cost,   COALESCE(SUM(si.total_cost), 0) AS lines_cost,
        s.profit       AS recorded_profit, s.total_amount - s.total_cost AS implied_profit
   FROM sales s
-  JOIN sale_items si ON si.sale_id = s.id
+  LEFT JOIN sale_items si ON si.sale_id = s.id
  GROUP BY s.id, s.invoice_no, s.total_amount, s.total_cost, s.profit
-HAVING s.total_amount <> SUM(si.total_price)
-    OR s.total_cost   <> SUM(si.total_cost)
+HAVING s.total_amount <> COALESCE(SUM(si.total_price), 0)
+    OR s.total_cost   <> COALESCE(SUM(si.total_cost), 0)
     OR s.profit       <> (s.total_amount - s.total_cost);
 
 
@@ -134,18 +137,37 @@ SELECT si.id::text, 'orphan sale_item'
 
 
 -- -----------------------------------------------------------------------------
--- 9. Stock movement whose total contradicts its sale
---    reference_id is the invoice number, NOT the sale uuid. A sale sells N
---    units, so its movements must sum to -N. Expect ZERO rows.
+-- 9. Sales whose stock movements do not add up to the quantity sold
+--    reference_id is the invoice number, NOT the sale uuid. A sale of N units
+--    must have movements summing to exactly -N.
+--    Expect ZERO rows. A sale with NO movement is the worst case, so the join is
+--    LEFT and COALESCE turns the absent movements into 0, which then disagrees
+--    with -N and reports the sale. An inner join would have dropped exactly the
+--    rows this section exists to catch.
 -- -----------------------------------------------------------------------------
 SELECT s.invoice_no,
-       SUM(sm.quantity) AS movement_total,
-       -SUM(si.quantity) AS expected_total
+       COUNT(sm.id)          AS movement_rows,
+       COALESCE(SUM(sm.quantity), 0) AS movement_total,
+       -COALESCE(SUM(si.quantity), 0) AS expected_total
   FROM sales s
-  JOIN sale_items si   ON si.sale_id = s.id
-  JOIN stock_movements sm ON sm.reference_id = s.invoice_no AND sm.type = 'sale'
+  LEFT JOIN sale_items si     ON si.sale_id = s.id
+  LEFT JOIN stock_movements sm ON sm.reference_id = s.invoice_no AND sm.type = 'sale'
  GROUP BY s.id, s.invoice_no
-HAVING SUM(sm.quantity) <> -SUM(si.quantity);
+HAVING COALESCE(SUM(sm.quantity), 0) <> -COALESCE(SUM(si.quantity), 0);
+
+
+-- -----------------------------------------------------------------------------
+-- 9b. Every movement must belong to a real purchase or sale
+--     reference_id is only ever set to an invoice number, so any movement whose
+--     reference matches neither is an orphan - most likely a sale that was
+--     deleted from the client and never cleaned up here.
+--     Expect ZERO rows.
+-- -----------------------------------------------------------------------------
+SELECT sm.id AS movement_id, sm.reference_id, sm.type, sm.quantity
+  FROM stock_movements sm
+ WHERE sm.type IN ('sale', 'purchase')
+   AND NOT EXISTS (SELECT 1 FROM sales s     WHERE s.invoice_no = sm.reference_id)
+   AND NOT EXISTS (SELECT 1 FROM purchases p WHERE p.invoice_no = sm.reference_id);
 
 
 -- -----------------------------------------------------------------------------
