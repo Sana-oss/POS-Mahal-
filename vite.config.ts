@@ -33,7 +33,7 @@ export default defineConfig(() => {
       // a DOM is actually required.
       environment: 'node',
       setupFiles: ['./src/test/setup.ts'],
-      include: ['src/**/*.{test,spec}.{ts,tsx}'],
+      include: ['src/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.test.mjs'],
       restoreMocks: true,
       // Pin the suite to local-only mode. Vite loads the real .env in tests too,
       // and a configured Supabase makes dataSource route every write to Postgres,
