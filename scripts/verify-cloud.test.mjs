@@ -228,16 +228,44 @@ describe('customer ledger invariants', () => {
       sales: [{ ...CLEAN_SALE, customer_id: 1, payment_method: 'debt', total_amount: 50 }],
       customerPayments: [{ id: 1, customer_id: 1, amount: 50 }],
     });
-    expect(find(results, 'every customer balance is explained by their debt sales and payments').broken).toBe(0);
+    expect(find(results, 'every debt sale and payment points at a real customer').broken).toBe(0);
   });
 
-  it('catches a balance that no sale or payment explains', () => {
+  // A customer may be created with an opening balance, and no payment row
+  // records it. Reporting that as a failure would flag correct data, so an
+  // opening balance must surface as information, never as a fault.
+  it('treats an opening balance as information, not a failure', () => {
     const { results } = run({
-      customers: [{ id: 1, name: 'احمد', balance: 0 }],
-      sales: [{ ...CLEAN_SALE, customer_id: 1, payment_method: 'debt', total_amount: 50 }],
+      customers: [{ id: 1, name: 'احمد', balance: 75 }],
+      sales: [],
+      saleItems: [],
+      stockMovements: [],
       customerPayments: [],
     });
-    expect(find(results, 'every customer balance is explained by their debt sales and payments').broken).toBe(1);
+    expect(find(results, 'every debt sale and payment points at a real customer').broken).toBe(0);
+    const info = results.find((r) => r.name.startsWith('customer opening balances'));
+    expect(info?.info).toBe(true);
+    expect(info?.details.join()).toMatch(/75\.00/);
+  });
+
+  it('catches a debt sale with no customer attached', () => {
+    const { results } = run({
+      customers: [{ id: 1, name: 'احمد', balance: 0 }],
+      sales: [{ ...CLEAN_SALE, customer_id: null, payment_method: 'debt', total_amount: 50 }],
+    });
+    const check = find(results, 'every debt sale and payment points at a real customer');
+    expect(check.broken).toBe(1);
+    expect(check.details.join()).toMatch(/no customer is attached/);
+  });
+
+  it('catches a sale pointing at a customer who does not exist', () => {
+    const { results } = run({
+      customers: [],
+      sales: [{ ...CLEAN_SALE, customer_id: 'ghost', payment_method: 'debt', total_amount: 50 }],
+    });
+    const check = find(results, 'every debt sale and payment points at a real customer');
+    expect(check.broken).toBe(1);
+    expect(check.details.join()).toMatch(/does not exist/);
   });
 
   it('catches a negative balance even though the column forbids one', () => {

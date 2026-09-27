@@ -50,6 +50,7 @@ const ANON = process.env.VITE_SUPABASE_ANON_KEY;
 const EMAIL = process.env.VERIFY_EMAIL;
 const PASSWORD = process.env.VERIFY_PASSWORD;
 const DO_WRITE = process.argv.includes('--write');
+const JSON_MODE = process.argv.includes('--json');
 
 /** Tables whose movement means another register's cache is stale. */
 export const WATCHED_TABLES = [
@@ -235,10 +236,39 @@ export function analyseIntegrity(data) {
   }
 
   // --- customer ledger ---
+  // A customer can legitimately be created with an opening balance, and no
+  // payment row records it. So balance = opening + debt sales - paid can always
+  // be made to fit by positing an opening, which means balance drift is NOT
+  // provable from the data alone. Claiming otherwise would be a check that
+  // cries wolf on correct data.
+  //
+  // What IS provable: the faults that leave no innocent explanation. A debt
+  // sale with no customer (the RPC rejects this), a sale pointing at a customer
+  // that does not exist, and a negative balance the CHECK should have stopped.
   const cd = [];
-  let ledgerBad = 0;
+  const infoLines = [];
+  let ledgerFaults = 0;
   let negativeBalance = 0;
+  const customerIds = new Set(customers.map((c) => c.id));
   const paymentsByCustomer = groupBy(customerPayments, 'customer_id');
+
+  for (const sale of sales) {
+    if (sale.payment_method === 'debt' && !sale.customer_id) {
+      ledgerFaults++;
+      addDetail(cd, `sale ${sale.invoice_no}: payment_method is 'debt' but no customer is attached, which rpc_execute_sale rejects`);
+    }
+    if (sale.customer_id && !customerIds.has(sale.customer_id)) {
+      ledgerFaults++;
+      addDetail(cd, `sale ${sale.invoice_no}: points at customer ${sale.customer_id}, who does not exist`);
+    }
+  }
+  for (const payment of customerPayments) {
+    if (payment.customer_id && !customerIds.has(payment.customer_id)) {
+      ledgerFaults++;
+      addDetail(cd, `customer_payment ${payment.id}: points at customer ${payment.customer_id}, who does not exist`);
+    }
+  }
+
   for (const customer of customers) {
     if (n(customer.balance) < 0) {
       negativeBalance++;
@@ -246,24 +276,31 @@ export function analyseIntegrity(data) {
     }
     const debtSales = sales.filter((s) => s.customer_id === customer.id && s.payment_method === 'debt');
     const paid = (paymentsByCustomer.get(customer.id) ?? []).reduce((a, p) => a + n(p.amount), 0);
-    const impliedOpening =
-      n(customer.balance) + debtSales.reduce((a, s) => a + n(s.total_amount), 0) - paid;
-    if (!near(impliedOpening, 0, 0.05)) {
-      ledgerBad++;
-      addDetail(
-        cd,
-        `customer ${customer.name}: balance ${customer.balance} is not explained by debt sales and payments (implied opening ${impliedOpening.toFixed(2)})`
+    const debtTotal = debtSales.reduce((a, s) => a + n(s.total_amount), 0);
+    const impliedOpening = n(customer.balance) + debtTotal - paid;
+
+    if (!near(impliedOpening, 0, 0.05) && infoLines.length < MAX_DETAILS) {
+      infoLines.push(
+        `customer ${customer.name}: opening balance of ${impliedOpening.toFixed(2)} (balance ${customer.balance}, debt sales ${debtTotal.toFixed(2)}, paid ${paid.toFixed(2)})`
       );
     }
   }
-  if (customers.length) {
+  // Emitted whenever there is anything that could point at a customer, which
+  // includes the case where the customer list is empty and an orphan is the
+  // only explanation for a dangling reference.
+  if (sales.length || customerPayments.length || customers.length) {
     record(
-      'every customer balance is explained by their debt sales and payments',
-      ledgerBad,
+      'every debt sale and payment points at a real customer',
+      ledgerFaults,
       cd,
-      ledgerBad ? 'a non-zero implied opening is fine if the customer was created with one; anything else means the debt ledger drifted' : undefined
+      ledgerFaults ? 'rpc_execute_sale rejects a debt sale with no customer, so these rows predate that guard' : undefined
     );
+  }
+  if (customers.length) {
     record('no customer has a negative balance', negativeBalance, cd);
+  }
+  if (infoLines.length) {
+    results.push({ name: 'customer opening balances (informational)', broken: 0, details: infoLines, info: true });
   }
 
   // --- products ---
@@ -286,25 +323,40 @@ export function analyseIntegrity(data) {
 // Reporting
 // ---------------------------------------------------------------------------
 
-const GREEN = '\x1b[32m';
-const RED = '\x1b[31m';
-const YELLOW = '\x1b[33m';
-const DIM = '\x1b[2m';
-const BOLD = '\x1b[1m';
-const OFF = '\x1b[0m';
+// Colour is suppressed when stdout is not a TTY, so piping or redirecting the
+// output produces text that is actually readable (and pasteable).
+const PLAIN = JSON_MODE || process.env.NO_COLOR === '1' || !process.stdout.isTTY;
+const GREEN = PLAIN ? '' : '\x1b[32m';
+const RED = PLAIN ? '' : '\x1b[31m';
+const YELLOW = PLAIN ? '' : '\x1b[33m';
+const DIM = PLAIN ? '' : '\x1b[2m';
+const BOLD = PLAIN ? '' : '\x1b[1m';
+const OFF = PLAIN ? '' : '\x1b[0m';
 
 let failures = 0;
 let warnings = 0;
 let checks = 0;
+const results_log = [];
 
-function emit(kind, name, detail) {
+function emit(kind, name, detail, info = false) {
+  checks++;
+  if (kind === 'fail') failures++;
+  else if (kind === 'warn') warnings++;
+  results_log.push({ kind, name, detail, ...(info ? { info: true } : {}) });
+
+  if (JSON_MODE) {
+    // Machine-readable: one check per line, no colour, ready to paste.
+    console.log(JSON.stringify({ kind, name, detail, ...(info ? { info: true } : {}) }));
+    return;
+  }
+  if (info) {
+    console.log(`  ${DIM}INFO${OFF}  ${name}`);
+    for (const line of detail) console.log(`        ${DIM}${line}${OFF}`);
+    return;
+  }
   if (kind === 'pass') {
-    checks++;
     console.log(`  ${GREEN}PASS${OFF}  ${name}`);
   } else {
-    checks++;
-    if (kind === 'fail') failures++;
-    else warnings++;
     const tag = kind === 'fail' ? `${RED}FAIL${OFF}` : `${YELLOW}WARN${OFF}`;
     console.log(`  ${tag}  ${name}`);
     for (const line of detail) console.log(`        ${DIM}${line}${OFF}`);
@@ -600,6 +652,19 @@ async function main() {
   await checkFractionalSupport(supabase);
   await checkRealtimeSubscription(supabase);
   if (DO_WRITE) await checkAtomicity(supabase);
+
+  if (JSON_MODE) {
+    console.log(
+      JSON.stringify({
+        summary: { checks, failed: failures, warned: warnings },
+        shop: profile?.shop_id ?? null,
+        atomicityProbed: DO_WRITE,
+        checks: results_log,
+      })
+    );
+    return failures ? 1 : 0;
+  }
+
   printSqlForManualChecks();
   printRealtimeManualSteps();
 
@@ -609,6 +674,9 @@ async function main() {
       (warnings ? `, ${YELLOW}${warnings} warnings${OFF}` : '')
   );
   if (!DO_WRITE) console.log(`${DIM}Atomicity probe skipped. Re-run with --write to include it.${OFF}`);
+  if (failures) {
+    console.log(`${DIM}Re-run with --json and paste the output to get a precise reading.${OFF}`);
+  }
   return failures ? 1 : 0;
 }
 
