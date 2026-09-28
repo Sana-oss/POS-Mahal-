@@ -89,10 +89,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span className="px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200 text-xs font-bold">
                 الوردية المباشرة
               </span>
-              <span className="text-slate-400 text-xs">• مسجّل باسم {session?.name || 'أبو أحمد'}</span>
+              {/* Only shown when there is a name to show. The account name comes
+                  from the signed-in profile, which is the single source of truth -
+                  no name is hardcoded here any more. */}
+              {session?.name && (
+                <span className="text-slate-400 text-xs">• مسجّل باسم {session.name}</span>
+              )}
             </div>
             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-              مرحبًا بك يا {session?.name || 'أبو أحمد'} 👋{' '}
+              {session?.name ? `مرحبًا بك يا ${session.name} 👋` : 'مرحبًا بك 👋'}{' '}
               <span className="text-slate-400 font-normal text-base">| {settings.shop_name}</span>
             </h1>
             <p className="text-xs sm:text-sm text-slate-500 flex items-center gap-1.5">

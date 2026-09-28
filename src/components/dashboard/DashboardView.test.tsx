@@ -305,3 +305,26 @@ describe('DashboardView - navigation', () => {
     expect(onNavigate).toHaveBeenCalledWith('debts');
   });
 });
+
+/**
+ * The dashboard greeting used to carry a hardcoded fallback name, so an account
+ * with no name in its profile was greeted as that person rather than by nobody.
+ * The account name is the only source of truth now.
+ */
+describe('DashboardView - greeting', () => {
+  it('greets the signed-in account by its own name', () => {
+    store.setSession({ id: 'usr-1', name: 'عبدالعزيز', email: 'adel@gmail.com' } as never);
+    renderDashboard();
+    // The name appears in both the badge and the heading, so match the heading's
+    // full text rather than the first element containing the name.
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading.textContent).toContain('مرحبًا بك يا عبدالعزيز');
+  });
+
+  it('does not fall back to a hardcoded name when the account has none', () => {
+    store.setSession({ id: 'usr-1', name: '', email: 'adel@gmail.com' } as never);
+    renderDashboard();
+    expect(screen.getByText(/^مرحبًا بك/)).toBeTruthy();
+    expect(screen.queryByText('أبو أحمد')).toBeNull();
+  });
+});
