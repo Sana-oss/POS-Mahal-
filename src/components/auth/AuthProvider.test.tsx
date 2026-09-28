@@ -154,6 +154,34 @@ describe('AuthProvider - cloud mode', () => {
     expect(screen.getByTestId('name')).toHaveTextContent('سارة');
   });
 
+  /**
+   * The store session is what the header, sidebar and dashboard greeting read.
+   * fetchProfile used to update only local context state, so the store kept its
+   * seeded placeholder name and the greeting showed 'أبو أحمد' no matter who
+   * signed in. The test above passed the whole time, because the context was
+   * correct - only the store was not.
+   */
+  it('mirrors the signed-in profile into the store session', async () => {
+    supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
+    store.setSession({ id: 'usr-1', name: 'أبو أحمد', email: 'x@y.z', role: 'owner' } as never);
+
+    renderProbe();
+
+    await waitFor(() => expect(store.getSession()?.name).toBe('سارة'));
+    expect(store.getSession()?.role).toBe('owner');
+  });
+
+  it('clears the mirrored name on sign-out so the next cashier does not inherit it', async () => {
+    supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
+    supabaseMock.signOut.mockResolvedValue(undefined);
+    renderProbe();
+    await waitFor(() => expect(store.getSession()?.name).toBe('سارة'));
+
+    await userEvent.click(screen.getByText('signout'));
+
+    await waitFor(() => expect(store.getSession()).toBeNull());
+  });
+
   it('leaves the shop unset when the profile row is missing', async () => {
     // App.tsx shows an error screen when mode is cloud and shopId is null, so this
     // must not resolve to a shop the user does not belong to.

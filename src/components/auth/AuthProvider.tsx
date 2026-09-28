@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+﻿import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from '../../lib/supabase';
 import { store } from '../../lib/store';
@@ -80,7 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(session?.user ?? null);
           
           if (session?.user) {
-            fetchProfile(session.user.id);
+            fetchProfile(session.user.id, session.user.email ?? '');
           } else {
             setLoading(false);
           }
@@ -99,7 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(session?.user ?? null);
 
         if (session?.user) {
-          fetchProfile(session.user.id);
+          fetchProfile(session.user.id, session.user.email ?? '');
         } else {
           setShopId(null);
           setProfile(null);
@@ -117,7 +117,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  async function fetchProfile(userId: string) {
+  async function fetchProfile(userId: string, email = '') {
     if (!supabase) return;
 
     try {
@@ -132,6 +132,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else if (data) {
         setShopId(data.shop_id);
         setProfile(data as UserProfile);
+
+        // Mirror the signed-in profile into the store's session.
+        //
+        // The header, sidebar and dashboard greeting all read the store session,
+        // which otherwise stays at the seeded placeholder ('Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯') because
+        // nothing in cloud mode ever wrote a name into it. Without this, signing
+        // in as anybody showed a placeholder name, and the greeting looked
+        // hardcoded no matter what the profile said.
+        store.setSession({
+          id: data.id,
+          name: data.full_name,
+          email,
+          role: data.role,
+          shift_started_at: new Date(new Date().setHours(7, 0, 0, 0)).toISOString(),
+        });
       }
     } catch (err) {
       console.error('Failed to load profile', err);
@@ -146,7 +161,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     // Drop the cached shop data: the next cashier must never open the app and
     // see the previous shop's products/debts (or the demo seed) before the
-    // cloud bootstrap runs.
+    // cloud bootstrap runs. The mirrored name goes with it, or the next person to
+    // sign in briefly sees the previous operator's name.
+    store.setSession(null);
     unbindShop();
   };
 

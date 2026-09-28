@@ -212,9 +212,14 @@ describe('store - session', () => {
     shift_started_at: new Date().toISOString(),
   });
 
-  it('returns a default session when none is stored', () => {
+  it('reports nobody signed in after setSession(null)', () => {
+    // This used to assert the opposite - that clearing returned the seeded
+    // default. That default is what left the previous operator's placeholder
+    // name on screen after signing out of the cloud, so clearing now means
+    // cleared. The placeholder only applies to a store that has never had a
+    // session written at all, which is the local-only demo seed.
     store.setSession(null);
-    expect(store.getSession()).not.toBeNull();
+    expect(store.getSession()).toBeNull();
   });
 
   it('round-trips a session', () => {

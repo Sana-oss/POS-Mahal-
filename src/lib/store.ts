@@ -668,7 +668,12 @@ class StoreManager {
     if (session) {
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     } else {
-      localStorage.removeItem(SESSION_KEY);
+      // A tombstone rather than a removal. getSession() falls back to the seeded
+      // default session when the key is absent, so deleting it made signing out
+      // resurrect the placeholder name ('أبو أحمد') for whoever signed in next.
+      // Storing the literal 'null' parses back to null, which is the honest
+      // answer: nobody is signed in.
+      localStorage.setItem(SESSION_KEY, 'null');
     }
     this.notify();
   }
