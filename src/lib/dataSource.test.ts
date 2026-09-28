@@ -383,3 +383,105 @@ describe('dataSource - session teardown', () => {
     expect(store.getState().products).toEqual([]);
   });
 });
+
+/**
+ * A refusal raised by the database is not an outage.
+ *
+ * App.tsx gates the entire POS behind `sync.state !== 'ready'`. Every save used
+ * to set that state on any failure, so a customer being over their credit limit
+ * replaced the whole POS with a "could not load shop data" screen and a retry
+ * button, hiding the very message that explained the refusal. A live shop hit
+ * exactly this: "Credit limit exceeded for Sanad" came with a CloudOff screen and
+ * a later cash sale appeared to work with no error at all, because nothing had
+ * actually been wrong with the connection.
+ */
+describe('database rejections are not sync failures', () => {
+  const { isDatabaseRejection, translateRefusal } = ds;
+  const code = (c: string, message: string) => Object.assign(new Error(message), { code: c });
+
+  it('treats a raised exception as the database answering', () => {
+    expect(isDatabaseRejection(code('P0001', 'Credit limit exceeded'))).toBe(true);
+  });
+
+  it('treats constraint violations as the database answering', () => {
+    expect(isDatabaseRejection(code('23505', 'duplicate key'))).toBe(true);
+    expect(isDatabaseRejection(code('23502', 'null value'))).toBe(true);
+  });
+
+  it('treats a transport failure as an outage', () => {
+    expect(isDatabaseRejection(new TypeError('fetch failed'))).toBe(false);
+    expect(isDatabaseRejection(new Error('Network request failed'))).toBe(false);
+    expect(isDatabaseRejection(undefined)).toBe(false);
+    expect(isDatabaseRejection({ code: 123 })).toBe(false);
+  });
+
+  it('keeps class 08 connection exceptions as outages', () => {
+    // 08xxx is SQLSTATE "connection exception" - the database did NOT answer.
+    expect(isDatabaseRejection(code('08006', 'connection failure'))).toBe(false);
+  });
+
+  it('translates the credit limit refusal the cashier actually saw', () => {
+    const out = translateRefusal('Credit limit exceeded for Sanad (Owes: 51.00, Limit: 50.00)');
+    expect(out).toContain('Sanad');
+    expect(out).toContain('51.00');
+    expect(out).toContain('50.00');
+    expect(out).not.toMatch(/Credit limit/);
+  });
+
+  it('translates the other rules the RPCs can raise', () => {
+    expect(translateRefusal('Insufficient stock for product Water (Available: 3.000)')).toContain('Water');
+    expect(translateRefusal('Quantity must be greater than zero')).not.toMatch(/Quantity/);
+    expect(translateRefusal('Customer is required for debt sales')).not.toMatch(/debt sales/);
+    expect(translateRefusal('Unauthorized shop access')).not.toMatch(/Unauthorized/);
+  });
+
+  it('passes an unrecognised message through rather than hiding it', () => {
+    // Silently swallowing an unknown error would leave the cashier with no idea
+    // what happened, which is worse than an English sentence.
+    expect(translateRefusal('something new and unexpected')).toBe('something new and unexpected');
+  });
+});
+
+/**
+ * The end-to-end shape of the bug, in the terms App.tsx cares about: after a
+ * refused sale the sync state must still be 'ready', because App.tsx replaces the
+ * whole POS with a CloudOff screen whenever it is anything else.
+ */
+describe('a refused sale leaves the app usable', () => {
+  it('keeps sync state ready and re-throws in Arabic', async () => {
+    stubEmptyShop();
+    await ds.bootstrapFromCloud(SHOP);
+    expect(ds.getSyncStatus().state).toBe('ready');
+
+    cloud.executeSale.mockRejectedValueOnce(
+      Object.assign(new Error('Credit limit exceeded for Sanad (Owes: 51.00, Limit: 50.00)'), {
+        code: 'P0001',
+      })
+    );
+
+    await expect(
+      ds.executeSale({ items: [{ productId: 'p1', quantity: 1 }], paymentMethod: 'debt' })
+    ).rejects.toThrow(/Sanad/);
+
+    // The whole point: the POS is not gated, and no outage is recorded.
+    const status = ds.getSyncStatus();
+    expect(status.state, 'a refusal must not gate the POS behind a CloudOff screen').toBe('ready');
+    expect(status.error).toBeNull();
+    expect(status.pending).toBe(0);
+  });
+
+  it('still records an outage when the database cannot be reached', async () => {
+    stubEmptyShop();
+    await ds.bootstrapFromCloud(SHOP);
+
+    cloud.executeSale.mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    await expect(
+      ds.executeSale({ items: [{ productId: 'p1', quantity: 1 }], paymentMethod: 'cash' })
+    ).rejects.toThrow();
+
+    const status = ds.getSyncStatus();
+    expect(status.state).toBe('error');
+    expect(status.error).toBeTruthy();
+  });
+});

@@ -95,8 +95,53 @@ function requireShopId(): string {
   return boundShopId;
 }
 
+/**
+ * Turns a refusal raised by the database into something a cashier can act on.
+ *
+ * The RPCs raise plain English, because the migration files are the reference for
+ * the rule and English keeps them readable. A shopkeeper reading
+ * "Credit limit exceeded for Sanad (Owes: 51.00, Limit: 50.00)" learns nothing
+ * about what to do next, so the business rules are mapped to Arabic here. The
+ * original text is kept for anything unmapped, and the mapping is deliberately
+ * substring-based: the exact wording of a server message should not be allowed to
+ * silently change what the cashier is told.
+ */
+const REFUSAL_TRANSLATIONS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
+  [
+    /Credit limit exceeded for (.*?) \(Owes: ([\d.]+), Limit: ([\d.]+)\)/i,
+    (m) =>
+      `تجاوز الحد الائتماني للعميل ${m[1]}. ` +
+      `المستحق ${m[2]} والحد ${m[3]}. ` +
+      `سجّل دفعة للعميل أو ارفع حدّه الائتماني.`,
+  ],
+  [
+    /Insufficient stock for product (.*?) \(Available: ([\d.]+)\)/i,
+    (m) => `الكمية المتوفرة من ${m[1]} هي ${m[2]} فقط.`,
+  ],
+  [/Product (.*?) not found/i, (m) => `المنتج ${m[1]} غير موجود.`],
+  [/Quantity must be greater than zero/i, () => 'الكمية يجب أن تكون أكبر من الصفر.'],
+  [/Customer is required for debt sales/i, () => 'البيع الآجل يتطلب تحديد عميل.'],
+  [/Customer not found/i, () => 'العميل المحدد غير موجود في سجل الديون.'],
+  [/Sale has no items/i, () => 'لا يمكن إتمام فاتورة فارغة.'],
+  [/Invalid payment method/i, () => 'طريقة الدفع غير صحيحة.'],
+  [/Unauthorized shop access/i, () => 'لا تملك صلاحية الوصول إلى بيانات هذا المتجر.'],
+  [
+    /Payment amount exceeds current balance/i,
+    () => 'المبلغ المدفوع أكبر من رصيد العميل الحالي.',
+  ],
+];
+
+export function translateRefusal(message: string): string {
+  for (const [pattern, build] of REFUSAL_TRANSLATIONS) {
+    const m = message.match(pattern);
+    if (m) return build(m);
+  }
+  return message;
+}
+
 function messageOf(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+  if (error instanceof Error && error.message) return translateRefusal(error.message);
+  return fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +415,30 @@ export async function deleteProduct(id: string): Promise<void> {
 }
 
 
+/**
+ * True when the database answered with an error of its own, rather than the
+ * request failing to reach it.
+ *
+ * PostgREST reports a raised exception as a structured error carrying a SQLSTATE
+ * - P0001 for RAISE EXCEPTION, 23505 for a unique violation and so on. A
+ * transport failure has no code at all: it is a TypeError reading "fetch failed".
+ *
+ * The distinction matters because App.tsx gates the entire POS behind
+ * `sync.state !== 'ready'`. Treating a business refusal as a sync failure put a
+ * full-screen "could not load shop data" wall in front of the cashier because
+ * one customer was over their credit limit, hiding the message that explained
+ * why. The database answering at all proves the connection is healthy, so only a
+ * missing SQLSTATE is treated as the cloud being unreachable.
+ */
+export function isDatabaseRejection(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (typeof code !== 'string') return false;
+  // SQLSTATE class 08 is connection exceptions; those ARE transport failures and
+  // must keep the error state. Everything else is the database answering.
+  if (code.startsWith('08')) return false;
+  return /^(P\d{4}|[0-9A-Z]{5})$/.test(code);
+}
+
 /** Wraps a cloud write: tracks it in the sync status and stamps success/failure. */
 async function write<T>(fallbackMessage: string, task: () => Promise<T>): Promise<T> {
   patchStatus({ pending: status.pending + 1, error: null });
@@ -378,6 +447,12 @@ async function write<T>(fallbackMessage: string, task: () => Promise<T>): Promis
     patchStatus({ state: 'ready', error: null, lastSyncAt: Date.now() });
     return result;
   } catch (error) {
+    // A refusal is not an outage. Leave the sync state alone so the app stays
+    // usable and the caller can show the real reason; only a failure to reach the
+    // database is allowed to gate the POS.
+    if (isDatabaseRejection(error)) {
+      throw new Error(messageOf(error, 'تعذر إتمام العملية.'));
+    }
     patchStatus({ state: 'error', error: messageOf(error, fallbackMessage) });
     throw error;
   } finally {
