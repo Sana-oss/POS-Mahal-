@@ -206,6 +206,101 @@ describe('executeSale - debt', () => {
   });
 });
 
+/**
+ * Credit limit. `credit_limit` had been stored since 0001 and read by nothing, so
+ * a customer could be run arbitrarily far past it. A live shop had a customer
+ * owing 234.60 against a limit of 50.
+ *
+ * These run through the real store so they cover local mode; migration 0008
+ * enforces the same rule in the database, which is the actual authority.
+ */
+describe('executeSale - credit limit', () => {
+  it('refuses a debt sale that would exceed the limit', () => {
+    const customer = store.addCustomer({ name: 'سند', initial_balance: 0, credit_limit: 50 });
+    const product = makeProduct({ selling_price: 10, stock_quantity: 100 });
+
+    expect(() =>
+      store.executeSale({
+        items: [{ productId: product.id, quantity: 6 }], // 60 > 50
+        paymentMethod: 'debt',
+        customerId: customer.id,
+      })
+    ).toThrow();
+  });
+
+  it('refuses when the customer is already over the limit from earlier debt', () => {
+    // The live case: owes 234.60 against a limit of 50.
+    const customer = store.addCustomer({ name: 'سند', initial_balance: 234.6, credit_limit: 50 });
+    const product = makeProduct({ selling_price: 10, stock_quantity: 100 });
+
+    expect(() =>
+      store.executeSale({
+        items: [{ productId: product.id, quantity: 1 }],
+        paymentMethod: 'debt',
+        customerId: customer.id,
+      })
+    ).toThrow();
+  });
+
+  it('allows a sale that lands exactly on the limit', () => {
+    const customer = store.addCustomer({ name: 'سند', initial_balance: 0, credit_limit: 50 });
+    const product = makeProduct({ selling_price: 10, stock_quantity: 100 });
+
+    const sale = store.executeSale({
+      items: [{ productId: product.id, quantity: 5 }], // exactly 50
+      paymentMethod: 'debt',
+      customerId: customer.id,
+    });
+
+    expect(sale.total_amount).toBe(50);
+    expect(store.getState().customers.find((c) => c.id === customer.id)?.balance).toBe(50);
+  });
+
+  it('a limit of 0 means no limit', () => {
+    const customer = store.addCustomer({ name: 'سند', initial_balance: 0, credit_limit: 0 });
+    const product = makeProduct({ selling_price: 10, stock_quantity: 1000 });
+
+    const sale = store.executeSale({
+      items: [{ productId: product.id, quantity: 100 }], // 1000 owed
+      paymentMethod: 'debt',
+      customerId: customer.id,
+    });
+
+    expect(sale.total_amount).toBe(1000);
+  });
+
+  it('leaves no trace when it refuses: no sale, no stock loss, no balance change', () => {
+    const customer = store.addCustomer({ name: 'سند', initial_balance: 0, credit_limit: 50 });
+    const product = makeProduct({ selling_price: 10, stock_quantity: 10 });
+    const salesBefore = store.getState().sales.length;
+
+    expect(() =>
+      store.executeSale({
+        items: [{ productId: product.id, quantity: 6 }],
+        paymentMethod: 'debt',
+        customerId: customer.id,
+      })
+    ).toThrow();
+
+    expect(store.getState().sales.length).toBe(salesBefore);
+    expect(stockOf(product.id)).toBe(10);
+    expect(store.getState().customers.find((c) => c.id === customer.id)?.balance).toBe(0);
+  });
+
+  it('never applies the limit to a cash sale', () => {
+    const customer = store.addCustomer({ name: 'سند', initial_balance: 0, credit_limit: 1 });
+    const product = makeProduct({ selling_price: 10, stock_quantity: 100 });
+
+    const sale = store.executeSale({
+      items: [{ productId: product.id, quantity: 5 }],
+      paymentMethod: 'cash',
+      customerId: customer.id,
+    });
+
+    expect(sale.total_amount).toBe(50);
+  });
+});
+
 describe('executeSale - debt', () => {
   it('adds to an existing outstanding balance', () => {
     const customer = store.addCustomer({ name: 'زبون', initial_balance: 15, credit_limit: 500 });

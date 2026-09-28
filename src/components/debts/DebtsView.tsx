@@ -99,7 +99,9 @@ export const DebtsView: React.FC = () => {
       const created = await addCustomer({
         name: newCustName.trim(),
         phone: newCustPhone.trim(),
-        credit_limit: parseFloat(newCustLimit) || 200,
+        // ?? semantics: an explicit 0 means "no limit" (migration 0008), and
+      // `|| 200` would silently turn a request for unlimited credit into 200.
+      credit_limit: Number.isFinite(parseFloat(newCustLimit)) ? parseFloat(newCustLimit) : 200,
         initial_balance: parseFloat(newCustInitial) || 0,
         notes: newCustNotes.trim(),
       });

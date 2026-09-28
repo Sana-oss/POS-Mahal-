@@ -6,6 +6,7 @@ import {
   calculateCartSummary,
   deriveOpeningBalance,
   validateStock,
+  validateCreditLimit,
   roundCurrency,
   roundQuantity,
 } from './calculations';
@@ -274,5 +275,57 @@ describe('roundCurrency', () => {
     // guard non-numeric input, so a NaN price would flow into a sale total.
     // Call sites currently coerce with `Number(x) || 0` before calling.
     expect(roundCurrency(Number('abc') as unknown as number)).toBeNaN();
+  });
+});
+
+describe('validateCreditLimit', () => {
+  // The live case that started this: a customer owing 234.60 with a limit of 50.
+  it('refuses when the projected balance passes the limit', () => {
+    const r = validateCreditLimit(234.6, 10, 50);
+    expect(r.valid).toBe(false);
+    expect(r.message).toMatch(/234.6/);
+    expect(r.message).toMatch(/50/);
+  });
+
+  it('allows a sale that lands exactly on the limit', () => {
+    expect(validateCreditLimit(40, 10, 50).valid).toBe(true);
+  });
+
+  it('treats a limit of 0 as no limit', () => {
+    expect(validateCreditLimit(234.6, 10_000, 0).valid).toBe(true);
+  });
+
+  it('treats a negative limit as no limit rather than blocking everything', () => {
+    expect(validateCreditLimit(0, 10, -5).valid).toBe(true);
+  });
+
+  it('counts existing debt, not just this sale', () => {
+    // 10 on its own is fine against 50, but 40 already owed makes it 50 total,
+    // and anything beyond that is over.
+    expect(validateCreditLimit(0, 10, 50).valid).toBe(true);
+    expect(validateCreditLimit(45, 10, 50).valid).toBe(false);
+  });
+
+  it('treats an unrecognisable balance as zero owed, never as unlimited credit', () => {
+    // NaN > limit is false, so without the explicit coercion this guard would
+    // fail open and wave through any amount of debt.
+    expect(validateCreditLimit(NaN, 10, 50).valid).toBe(true);
+    expect(validateCreditLimit(NaN, 60, 50).valid).toBe(false);
+    expect(validateCreditLimit(NaN, 999, 50).valid).toBe(false);
+  });
+
+  it('treats an unrecognisable limit as no limit, matching the SQL COALESCE', () => {
+    expect(validateCreditLimit(0, 10, NaN).valid).toBe(true);
+  });
+
+  it('never shows NaN in the refusal message', () => {
+    const r = validateCreditLimit(NaN, 999, 50);
+    expect(r.valid).toBe(false);
+    expect(r.message).not.toMatch(/NaN/);
+  });
+
+  it('does not let float noise reject a sale that is exactly on the limit', () => {
+    // 0.1 + 0.2 style drift must not push a legitimate sale over.
+    expect(validateCreditLimit(0.1, 0.2, 0.3).valid).toBe(true);
   });
 });

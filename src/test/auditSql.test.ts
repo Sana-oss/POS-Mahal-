@@ -168,3 +168,49 @@ describe('supabase SQL audit', () => {
     }
   });
 });
+
+/**
+ * The credit limit. `customers.credit_limit` existed from 0001 and was read by
+ * no SQL at all, so a customer reached 234.60 against a limit of 50. The rule
+ * now lives in the database, and these assertions fail if a future edit to the
+ * RPC drops it.
+ */
+describe('credit limit enforcement', () => {
+  const sale = readFileSync(join(SUPABASE, 'migrations', '0008_enforce_credit_limit.sql'), 'utf8');
+
+  it('has a migration that enforces the limit', () => {
+    expect(sale).toMatch(/CREATE OR REPLACE FUNCTION\s+rpc_execute_sale/);
+    expect(sale).toMatch(/credit_limit/);
+  });
+
+  it('treats a limit of zero as no limit rather than as no credit', () => {
+    // The column defaults to 0, so reading zero as "no credit" would block
+    // every customer who was never given an explicit limit.
+    expect(sale).toMatch(/credit_limit\s*>\s*0/);
+  });
+
+  it('checks the total owing, which includes debt already accrued', () => {
+    expect(sale).toMatch(/balance[\s\S]{0,80}\+[\s\S]{0,40}v_total_amount/);
+  });
+
+  it('checks after the total is known and before the balance is written', () => {
+    const check = sale.search(/Credit limit, enforced/i);
+    expect(check).toBeTruthy();
+    const at = sale.indexOf('v_projected_balance > v_credit_limit');
+    const update = sale.indexOf('UPDATE customers SET balance = balance + v_total_amount');
+    expect(at).toBeGreaterThan(-1);
+    expect(update).toBeGreaterThan(-1);
+    expect(at, 'the limit must be checked before the balance is updated').toBeLessThan(update);
+  });
+
+  it('reads the customer under a row lock, so two tills cannot race the limit', () => {
+    expect(sale).toMatch(/FROM customers WHERE id = p_customer_id AND shop_id = p_shop_id FOR UPDATE/);
+  });
+
+  it('keeps the client rule in step with the database rule', () => {
+    const client = readFileSync(join(process.cwd(), 'src', 'lib', 'calculations.ts'), 'utf8');
+    expect(client).toMatch(/export function validateCreditLimit/);
+    // The coerced `limit` local, matching the `v_credit_limit > 0` in SQL.
+    expect(client).toMatch(/const limit = Number\.isFinite\(creditLimit\)[\s\S]{0,120}if \(limit <= 0\)/);
+  });
+});

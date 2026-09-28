@@ -362,7 +362,9 @@ export const POSView: React.FC<POSViewProps> = ({
       const created = await addCustomer({
         name: newCustName.trim(),
         phone: newCustPhone.trim(),
-        credit_limit: parseFloat(newCustLimit) || 150,
+        // ?? semantics: an explicit 0 means "no limit" (migration 0008), and
+      // `|| 150` would silently turn a request for unlimited credit into 150.
+      credit_limit: Number.isFinite(parseFloat(newCustLimit)) ? parseFloat(newCustLimit) : 150,
         initial_balance: 0,
       });
       setSelectedCustomerId(created.id);
@@ -806,21 +808,22 @@ export const POSView: React.FC<POSViewProps> = ({
                 </div>
               </div>
 
-              {/* Advisory only, by design.
-                  credit_limit is an app addition, not part of the PRD: section 20
-                  defines `customers` as id / name / balance / created_at with no
-                  limit at all. Enforcing it in the UI, in store.executeSale and in
-                  rpc_execute_sale would risk refusing a sale the owner needs to
-                  complete, so the limit only informs the cashier via this badge.
+              {/* The limit is now enforced, not advisory.
+                  Migration 0008 rejects a debt sale in rpc_execute_sale when the
+                  customer's total owing would exceed credit_limit (0 = no limit),
+                  and store.executeSale mirrors it for local mode. This badge shows
+                  the same numbers before the cashier commits, so the refusal is a
+                  foreseeable outcome rather than a surprise.
 
-                  If a hard limit is ever wanted it must be enforced in
-                  rpc_execute_sale, not here - the browser check is cosmetic and
-                  the anon key is public. */}
-              {selectedCustomer && (
+                  A limit of 0 means no limit, so the badge hides itself rather than
+                  claiming a ceiling of zero. */}
+              {selectedCustomer && selectedCustomer.credit_limit > 0 && (
                 <div className="flex items-center justify-between text-[11px] text-slate-500 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200">
                   <span>سقف الدين المسموح: {selectedCustomer.credit_limit} {settings.currency}</span>
                   <span className={selectedCustomer.balance + summary.totalAmount > selectedCustomer.credit_limit ? 'text-rose-600 font-bold' : 'text-emerald-700'}>
-                    الدين الجديد: {(selectedCustomer.balance + summary.totalAmount).toFixed(2)} {settings.currency}
+                    {selectedCustomer.balance + summary.totalAmount > selectedCustomer.credit_limit
+                      ? `سيُرفض: ${(selectedCustomer.balance + summary.totalAmount).toFixed(2)} ${settings.currency}`
+                      : `الدين الجديد: ${(selectedCustomer.balance + summary.totalAmount).toFixed(2)} ${settings.currency}`}
                   </span>
                 </div>
               )}

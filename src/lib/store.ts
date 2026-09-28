@@ -16,7 +16,7 @@ import {
   StockMovement,
   UserSession,
 } from '../types';
-import { calculateAverageCost, roundCurrency, roundQuantity, validateStock } from './calculations';
+import { calculateAverageCost, roundCurrency, roundQuantity, validateStock, validateCreditLimit } from './calculations';
 
 const STORAGE_KEY = 'mahall_pos_database_v1';
 const SESSION_KEY = 'mahall_pos_session_v1';
@@ -845,6 +845,19 @@ class StoreManager {
         profit: lineProfit,
       });
 
+      // Credit limit, checked once the total is final but BEFORE the first
+      // mutation below. This mirrors rpc_execute_sale (migration 0008), where the
+      // check sits after the item loop and before the balance UPDATE, so a
+      // refused sale leaves no stock deducted, no movement and no sale row.
+      // Checking it after the deduction loop would destroy inventory on every
+      // refusal, which is exactly the trace the test below asserts is absent.
+      if (params.paymentMethod === 'debt' && customer) {
+        const limit = validateCreditLimit(customer.balance, totalAmount, customer.credit_limit);
+        if (!limit.valid) {
+          throw new Error(limit.message!);
+        }
+      }
+
       // Deduct stock (immutably: new product object + new products array so
       // React memos keyed on `products` recompute).
       // Rounded to NUMERIC(10,3) precision: cloud mode gets this from the
@@ -902,6 +915,7 @@ class StoreManager {
     };
 
     // 3. Update customer balance if debt (immutably, so `customers` memos refresh)
+    // The limit was already enforced before any mutation, inside the item loop.
     if (params.paymentMethod === 'debt' && customer) {
       const updatedCustomer: Customer = {
         ...customer,
@@ -1031,8 +1045,11 @@ class StoreManager {
       id: 'cust-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       name: trimmedName,
       phone: data.phone || '',
-      balance: roundCurrency(data.initial_balance || 0),
-      credit_limit: data.credit_limit || 200,
+      balance: roundCurrency(data.initial_balance ?? 0),
+      // ?? not ||: a limit of 0 is meaningful, because 0 means "no limit"
+      // (migration 0008). With `|| 200` a shopkeeper asking for unlimited credit
+      // silently got a 200 limit instead.
+      credit_limit: data.credit_limit ?? 200,
       notes: data.notes,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),

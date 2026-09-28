@@ -91,6 +91,57 @@ export function validateStock(
 }
 
 /**
+ * Credit limit rule for a debt sale.
+ *
+ * MUST stay in step with the identical check in rpc_execute_sale (migration
+ * 0008). The server is the authority - it re-derives the total from the locked
+ * product rows - so this copy exists to give the cashier a clear message instead
+ * of a raw database error, not to be the thing that enforces the rule.
+ *
+ * The rules, as agreed:
+ *   - A limit of 0 means no limit. The column defaults to 0, so reading zero as
+ *     "no credit" would block every customer who was never given a limit.
+ *   - The limit covers total owing, not just this sale, so a customer already
+ *     over their limit cannot add more debt.
+ *   - Reaching the limit exactly is allowed; only exceeding it is refused.
+ *
+ * @param balance what the customer already owes
+ * @param saleTotal what this sale would add
+ * @param creditLimit their limit; 0 or less means unlimited
+ */
+export function validateCreditLimit(
+  balance: number,
+  saleTotal: number,
+  creditLimit: number
+): { valid: boolean; message?: string } {
+  // Coerce explicitly rather than letting NaN through. `NaN > limit` is false,
+  // so an unrecognised balance would silently pass and allow unlimited debt -
+  // the guard failing open on the one input it exists to catch. This mirrors the
+  // COALESCE(balance, 0) in rpc_execute_sale.
+  const owed = Number.isFinite(balance) ? balance : 0;
+  const adding = Number.isFinite(saleTotal) ? saleTotal : 0;
+  const limit = Number.isFinite(creditLimit) ? creditLimit : 0;
+
+  if (limit <= 0) {
+    return { valid: true };
+  }
+
+  const projected = roundCurrency(owed + adding);
+  if (projected > creditLimit) {
+    return {
+      valid: false,
+      message:
+        `تجاوز الحد الائتماني للعميل. ` +
+        `المستحق حالياً ${roundCurrency(owed)}، والحد الائتماني ${limit}. ` +
+        `هذا البيع يرفع المستحق إلى ${projected}. ` +
+        `سجّل دفعة للعميل أو ارفع حدّه الائتماني.`,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Aggregates cart totals: Revenue, COGS, Gross Profit, Total items
  */
 export function calculateCartSummary(items: CartItem[]): {
