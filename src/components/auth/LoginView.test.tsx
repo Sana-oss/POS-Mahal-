@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { LoginView } from './LoginView';
 
@@ -8,24 +8,36 @@ vi.mock('lucide-react', () => ({
   Store: () => null,
   Loader2: () => null,
   LogIn: () => null,
+  MailCheck: () => null,
 }));
 
 const supabaseMock = vi.hoisted(() => ({
-  client: null as { auth: { signInWithPassword: ReturnType<typeof vi.fn> } } | null,
+  client: null as {
+    auth: {
+      signInWithPassword: ReturnType<typeof vi.fn>;
+      resetPasswordForEmail: ReturnType<typeof vi.fn>;
+    };
+  } | null,
+  configured: true,
 }));
 
 vi.mock('../../lib/supabase', () => ({
   get supabase() {
     return supabaseMock.client;
   },
-  isSupabaseConfigured: true,
+  get isSupabaseConfigured() {
+    return supabaseMock.configured;
+  },
   requireSupabase: () => supabaseMock.client,
 }));
 
 const signIn = vi.fn();
+const sendReset = vi.fn();
 const emailField = () => screen.getByLabelText('البريد الإلكتروني');
 const passwordField = () => screen.getByLabelText('كلمة المرور');
-const submit = () => screen.getByRole('button');
+// Named, not positional: the form now carries a "forgot password" button as
+// well, so a bare getByRole('button') would match several and throw.
+const submit = () => screen.getByRole('button', { name: 'دخول' });
 
 async function fillAndSubmit() {
   const user = userEvent.setup();
@@ -35,7 +47,10 @@ async function fillAndSubmit() {
 }
 
 beforeEach(() => {
-  supabaseMock.client = { auth: { signInWithPassword: signIn } };
+  supabaseMock.configured = true;
+  supabaseMock.client = { auth: { signInWithPassword: signIn, resetPasswordForEmail: sendReset } };
+  sendReset.mockReset();
+  sendReset.mockResolvedValue({ error: null });
   signIn.mockReset();
   signIn.mockResolvedValue({ error: null });
   render(<LoginView />);
@@ -147,4 +162,94 @@ describe('LoginView - accessibility', () => {
   it('masks the password field', () => {
     expect(passwordField()).toHaveAttribute('type', 'password');
   });
+});
+
+/**
+ * The app had no way to recover a forgotten password: LoginView only ever called
+ * signInWithPassword, so a cashier who forgot theirs was locked out with nothing
+ * to try. These cover the new path - including the property that matters most
+ * for security, that the confirmation never reveals whether an address is
+ * registered.
+ */
+describe('LoginView - forgot password', () => {
+  const forgot = () => screen.getByRole('button', { name: 'نسيت كلمة المرور؟' });
+  const sendButton = () => screen.getByRole('button', { name: /إرسال رابط الاستعادة/ });
+  const backToSignIn = () => screen.getByRole('button', { name: 'العودة لتسجيل الدخول' });
+
+  it('offers a way out of a forgotten password', () => {
+    expect(forgot()).toBeTruthy();
+  });
+
+  it('sends a recovery link for the entered address', async () => {
+    const user = userEvent.setup();
+
+    await user.click(forgot());
+    await user.type(emailField(), 'adel@gmail.com');
+    await user.click(sendButton());
+
+    await waitFor(() =>
+      expect(supabaseMock.client?.auth.resetPasswordForEmail).toHaveBeenCalledWith('adel@gmail.com')
+    );
+  });
+
+  it('trims the address before sending it', async () => {
+    const user = userEvent.setup();
+
+    await user.click(forgot());
+    await user.type(emailField(), '  adel@gmail.com  ');
+    await user.click(sendButton());
+
+    await waitFor(() =>
+      expect(supabaseMock.client?.auth.resetPasswordForEmail).toHaveBeenCalledWith('adel@gmail.com')
+    );
+  });
+
+  it('never says whether an address is registered', async () => {
+    const user = userEvent.setup();
+
+    await user.click(forgot());
+    await user.type(emailField(), 'nobody@example.com');
+    await user.click(sendButton());
+
+    // Supabase answers success for an unknown address too, so any wording that
+    // implies the account exists would be the only thing leaking it.
+    expect(await screen.findByText(/إذا كان البريد مسجلاً لدينا/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/غير مسجل|لا يوجد|not registered|unknown user/i);
+  });
+
+  it('reports a real send failure instead of claiming success', async () => {
+    const user = userEvent.setup();
+    sendReset.mockResolvedValue({ error: { message: 'rate limited' } });
+
+    await user.click(forgot());
+    await user.type(emailField(), 'adel@gmail.com');
+    await user.click(sendButton());
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('rate limited'));
+    expect(screen.queryByText(/إذا كان البريد مسجلاً/)).toBeNull();
+  });
+
+  it('asks for no password when resetting', async () => {
+    const user = userEvent.setup();
+
+    await user.click(forgot());
+
+    expect(screen.queryByLabelText('كلمة المرور')).toBeNull();
+  });
+
+  it('can go back to sign-in', async () => {
+    const user = userEvent.setup();
+
+    await user.click(forgot());
+    await user.click(backToSignIn());
+
+    expect(passwordField()).toBeTruthy();
+    expect(forgot()).toBeTruthy();
+  });
+
+  // The local-only case is deliberately not asserted here. It needs the shared
+  // beforeEach render torn down first, because that render is cloud-mode, and
+  // the resulting index arithmetic across two forms is more fragile than the
+  // two-line `if (!supabase)` guard it would be covering. The guard is in
+  // handleSendReset and the sign-in equivalent is covered above.
 });

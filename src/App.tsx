@@ -1,5 +1,5 @@
-/**
- * Mahall POS (محل POS)
+﻿/**
+ * Mahall POS (Ù…Ø­Ù„ POS)
  * A fast Arabic RTL POS, inventory, debt, expense, and profit-management system
  * for small grocery and food stores.
  */
@@ -30,10 +30,11 @@ import { calculateCartSummary } from './lib/calculations';
 import { Product, Sale } from './types';
 import { useAuth } from './components/auth/AuthProvider';
 import { LoginView } from './components/auth/LoginView';
+import { UpdatePasswordView } from './components/auth/UpdatePasswordView';
 import { AlertTriangle, CloudOff, Loader2, RefreshCw } from 'lucide-react';
 
 export default function App() {
-  const { session, loading: authLoading, mode, shopId } = useAuth();
+  const { session, loading: authLoading, mode, shopId, recoveryMode } = useAuth();
   const { state } = useStore();
   const sync = useSyncStatus();
   const [cart] = useCart();
@@ -110,7 +111,7 @@ export default function App() {
   };
 
   const handleFastProductCreated = (product: Product) => {
-    addToast(`تم تسجيل "${product.name}" بنجاح وإضافته للمخزون`);
+    addToast(`ØªÙ… ØªØ³Ø¬ÙŠÙ„ "${product.name}" Ø¨Ù†Ø¬Ø§Ø­ ÙˆØ¥Ø¶Ø§ÙØªÙ‡ Ù„Ù„Ù…Ø®Ø²ÙˆÙ†`);
     setScannedBarcodeForPOS(product.barcode);
     if (currentTab !== 'pos') {
       setCurrentTab('pos');
@@ -119,7 +120,7 @@ export default function App() {
 
   // Sale completed handler
   const handleSaleCompleted = (sale: Sale) => {
-    addToast(`تم تسجيل الفاتورة #${sale.invoice_no} بنجاح!`, 'success');
+    addToast(`ØªÙ… ØªØ³Ø¬ÙŠÙ„ Ø§Ù„ÙØ§ØªÙˆØ±Ø© #${sale.invoice_no} Ø¨Ù†Ø¬Ø§Ø­!`, 'success');
     setActiveReceiptSale(sale);
   };
 
@@ -129,6 +130,21 @@ export default function App() {
     setCurrentTab('purchases');
   };
 
+  // Password recovery outranks everything else, including the auth spinner.
+  // Supabase establishes a full session from the emailed link before any new
+  // password exists, so without this check the recovery would fall through to
+  // the cloud gate below - still pulling the shop, or showing the "could not
+  // load shop data" wall - and the cashier would never be asked for a new
+  // password. It also outranks the sign-in wall, because during recovery
+  // `session` is deliberately set.
+  //
+  // Ahead of `authLoading` on purpose: setting a new password needs no shop
+  // data, so a slow or failed profile fetch must not leave someone who followed
+  // a reset link staring at a spinner.
+  if (recoveryMode) {
+    return <UpdatePasswordView />;
+  }
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center">
@@ -137,6 +153,7 @@ export default function App() {
     );
   }
 
+
   // The cloud sign-in wall only applies when Supabase is actually configured;
   // otherwise the app runs local-only against localStorage.
   if (isSupabaseConfigured && !session) {
@@ -144,7 +161,7 @@ export default function App() {
   }
 
   // Cloud gate: while the shop is being pulled (or when it failed) we must not
-  // render the POS on top of an empty/stale cache — that is how a cashier ends
+  // render the POS on top of an empty/stale cache â€” that is how a cashier ends
   // up selling against the wrong stock numbers.
   if (mode === 'cloud' && session && sync.state !== 'ready') {
     if (sync.state === 'error' || !shopId) {
@@ -154,11 +171,11 @@ export default function App() {
             <div className="w-14 h-14 mx-auto rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
               <CloudOff size={28} />
             </div>
-            <h1 className="mt-4 text-lg font-bold text-slate-900">تعذر تحميل بيانات المتجر</h1>
+            <h1 className="mt-4 text-lg font-bold text-slate-900">ØªØ¹Ø°Ø± ØªØ­Ù…ÙŠÙ„ Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…ØªØ¬Ø±</h1>
             <p className="mt-2 text-sm text-slate-600 leading-6">
               {shopId
-                ? (sync.error ?? 'حدث خطأ غير متوقع أثناء الاتصال بقاعدة البيانات.')
-                : 'لم يتم العثور على متجر مرتبط بهذا الحساب. تأكد من تسجيل الدخول بالحساب الصحيح أو راجع مالك المتجر.'}
+                ? (sync.error ?? 'Ø­Ø¯Ø« Ø®Ø·Ø£ ØºÙŠØ± Ù…ØªÙˆÙ‚Ø¹ Ø£Ø«Ù†Ø§Ø¡ Ø§Ù„Ø§ØªØµØ§Ù„ Ø¨Ù‚Ø§Ø¹Ø¯Ø© Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª.')
+                : 'Ù„Ù… ÙŠØªÙ… Ø§Ù„Ø¹Ø«ÙˆØ± Ø¹Ù„Ù‰ Ù…ØªØ¬Ø± Ù…Ø±ØªØ¨Ø· Ø¨Ù‡Ø°Ø§ Ø§Ù„Ø­Ø³Ø§Ø¨. ØªØ£ÙƒØ¯ Ù…Ù† ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø¯Ø®ÙˆÙ„ Ø¨Ø§Ù„Ø­Ø³Ø§Ø¨ Ø§Ù„ØµØ­ÙŠØ­ Ø£Ùˆ Ø±Ø§Ø¬Ø¹ Ù…Ø§Ù„Ùƒ Ø§Ù„Ù…ØªØ¬Ø±.'}
             </p>
             {shopId && (
               <button
@@ -166,11 +183,11 @@ export default function App() {
                 className="mt-5 inline-flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition"
               >
                 <RefreshCw size={16} />
-                إعادة المحاولة
+                Ø¥Ø¹Ø§Ø¯Ø© Ø§Ù„Ù…Ø­Ø§ÙˆÙ„Ø©
               </button>
             )}
             <p className="mt-4 text-xs text-slate-400">
-              لم يتم عرض أي بيانات تجريبية. كل حركة بيع تُحفظ في سحابة متجرك فقط بعد نجاح الاتصال.
+              Ù„Ù… ÙŠØªÙ… Ø¹Ø±Ø¶ Ø£ÙŠ Ø¨ÙŠØ§Ù†Ø§Øª ØªØ¬Ø±ÙŠØ¨ÙŠØ©. ÙƒÙ„ Ø­Ø±ÙƒØ© Ø¨ÙŠØ¹ ØªÙØ­ÙØ¸ ÙÙŠ Ø³Ø­Ø§Ø¨Ø© Ù…ØªØ¬Ø±Ùƒ ÙÙ‚Ø· Ø¨Ø¹Ø¯ Ù†Ø¬Ø§Ø­ Ø§Ù„Ø§ØªØµØ§Ù„.
             </p>
           </div>
         </div>
@@ -180,7 +197,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center gap-3" dir="rtl">
         <Loader2 className="w-10 h-10 animate-spin text-teal-500" />
-        <p className="text-sm text-slate-500">جاري تحميل بيانات المتجر من السحابة...</p>
+        <p className="text-sm text-slate-500">Ø¬Ø§Ø±ÙŠ ØªØ­Ù…ÙŠÙ„ Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…ØªØ¬Ø± Ù…Ù† Ø§Ù„Ø³Ø­Ø§Ø¨Ø©...</p>
       </div>
     );
   }

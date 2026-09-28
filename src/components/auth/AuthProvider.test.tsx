@@ -1,4 +1,5 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
+import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -16,6 +17,7 @@ const supabaseMock = vi.hoisted(() => ({
   configured: true,
   getSession: vi.fn(),
   signOut: vi.fn(),
+  updateUser: vi.fn(),
   profileResult: { data: null as unknown, error: null as unknown },
   listeners: [] as Array<(event: string, session: unknown) => void>,
   subscribe: vi.fn(),
@@ -32,6 +34,7 @@ vi.mock('../../lib/supabase', () => ({
           auth: {
             getSession: supabaseMock.getSession,
             signOut: supabaseMock.signOut,
+            updateUser: supabaseMock.updateUser,
             onAuthStateChange: (cb: (e: string, s: unknown) => void) => {
               supabaseMock.listeners.push(cb);
               return { data: { subscription: { unsubscribe: supabaseMock.unsubscribe } } };
@@ -60,6 +63,7 @@ const SESSION = {
 
 function Probe() {
   const auth = useAuth();
+  const [pwError, setPwError] = React.useState('');
   return (
     <div>
       <span data-testid="mode">{auth.mode}</span>
@@ -67,7 +71,17 @@ function Probe() {
       <span data-testid="shopId">{auth.shopId ?? 'none'}</span>
       <span data-testid="name">{auth.profile?.full_name ?? 'none'}</span>
       <span data-testid="role">{auth.profile?.role ?? 'none'}</span>
+      <span data-testid="recovery">{String(auth.recoveryMode)}</span>
       <button onClick={() => void auth.signOut()}>signout</button>
+      <button onClick={async () => {
+        try {
+          await auth.updatePassword('newsecret');
+          setPwError('none');
+        } catch (e) {
+          setPwError(e instanceof Error ? e.message : 'failed');
+        }
+      }}>setpassword</button>
+      <span data-testid="pwerror">{pwError}</span>
     </div>
   );
 }
@@ -80,9 +94,9 @@ const renderProbe = () =>
   );
 
 /** Fire the auth listener the way Supabase does on a sign-in/out elsewhere. */
-async function fireAuthStateChange(session: unknown) {
+async function fireAuthStateChange(session: unknown, event = 'SIGNED_OUT') {
   await waitFor(() => expect(supabaseMock.listeners.length).toBeGreaterThan(0));
-  for (const cb of supabaseMock.listeners) await cb('SIGNED_OUT', session);
+  for (const cb of supabaseMock.listeners) await cb(event, session);
 }
 
 beforeEach(() => {
@@ -91,8 +105,9 @@ beforeEach(() => {
   supabaseMock.listeners = [];
   supabaseMock.getSession.mockReset().mockResolvedValue({ data: { session: null } });
   supabaseMock.signOut.mockReset().mockResolvedValue({ error: null });
+  supabaseMock.updateUser.mockReset().mockResolvedValue({ error: null });
   supabaseMock.profileResult = {
-    data: { id: 'user-1', shop_id: 'shop-7', role: 'owner', full_name: 'سارة' },
+    data: { id: 'user-1', shop_id: 'shop-7', role: 'owner', full_name: 'Ø³Ø§Ø±Ø©' },
     error: null,
   };
   supabaseMock.subscribe.mockReset();
@@ -116,7 +131,7 @@ describe('AuthProvider - offline mode', () => {
     supabaseMock.configured = false;
     store.setSession({
       id: 'local-1',
-      name: 'أبو أحمد',
+      name: 'Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯',
       email: 'a@b.test',
       role: 'owner',
       shift_started_at: new Date().toISOString(),
@@ -124,7 +139,7 @@ describe('AuthProvider - offline mode', () => {
 
     renderProbe();
 
-    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('أبو أحمد'));
+    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯'));
     expect(screen.getByTestId('role')).toHaveTextContent('owner');
   });
 
@@ -151,23 +166,23 @@ describe('AuthProvider - cloud mode', () => {
     renderProbe();
 
     await waitFor(() => expect(screen.getByTestId('shopId')).toHaveTextContent('shop-7'));
-    expect(screen.getByTestId('name')).toHaveTextContent('سارة');
+    expect(screen.getByTestId('name')).toHaveTextContent('Ø³Ø§Ø±Ø©');
   });
 
   /**
    * The store session is what the header, sidebar and dashboard greeting read.
    * fetchProfile used to update only local context state, so the store kept its
-   * seeded placeholder name and the greeting showed 'أبو أحمد' no matter who
+   * seeded placeholder name and the greeting showed 'Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯' no matter who
    * signed in. The test above passed the whole time, because the context was
    * correct - only the store was not.
    */
   it('mirrors the signed-in profile into the store session', async () => {
     supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
-    store.setSession({ id: 'usr-1', name: 'أبو أحمد', email: 'x@y.z', role: 'owner' } as never);
+    store.setSession({ id: 'usr-1', name: 'Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯', email: 'x@y.z', role: 'owner' } as never);
 
     renderProbe();
 
-    await waitFor(() => expect(store.getSession()?.name).toBe('سارة'));
+    await waitFor(() => expect(store.getSession()?.name).toBe('Ø³Ø§Ø±Ø©'));
     expect(store.getSession()?.role).toBe('owner');
   });
 
@@ -175,7 +190,7 @@ describe('AuthProvider - cloud mode', () => {
     supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
     supabaseMock.signOut.mockResolvedValue(undefined);
     renderProbe();
-    await waitFor(() => expect(store.getSession()?.name).toBe('سارة'));
+    await waitFor(() => expect(store.getSession()?.name).toBe('Ø³Ø§Ø±Ø©'));
 
     await userEvent.click(screen.getByText('signout'));
 
@@ -233,7 +248,7 @@ describe('AuthProvider - the session ends without a sign-out', () => {
 describe('AuthProvider - explicit sign-out', () => {
   it('clears the backend session and wipes the cached shop data', async () => {
     supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
-    store.addExpense({ title: 'مصروف سابق', amount: 10, category: 'أخرى' });
+    store.addExpense({ title: 'Ù…ØµØ±ÙˆÙ Ø³Ø§Ø¨Ù‚', amount: 10, category: 'Ø£Ø®Ø±Ù‰' });
 
     const user = userEvent.setup();
     renderProbe();
@@ -244,5 +259,63 @@ describe('AuthProvider - explicit sign-out', () => {
     expect(supabaseMock.signOut).toHaveBeenCalled();
     // The next cashier must not open the app and see the previous shop's data.
     expect(dataSourceMock.unbindShop).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Password recovery.
+ *
+ * Supabase establishes a real session from the emailed link *before* any new
+ * password exists. The auth event was previously discarded as `_event`, so the
+ * app could not tell a recovery from an ordinary sign-in: the cashier following
+ * a reset link was dropped straight into the POS with the old password still in
+ * force and no prompt to change it. Which is to say, the reset link did nothing.
+ */
+describe('AuthProvider - password recovery', () => {
+  it('enters recovery mode on a PASSWORD_RECOVERY event', async () => {
+    supabaseMock.getSession.mockResolvedValue({ data: { session: null } });
+    renderProbe();
+
+    await fireAuthStateChange(SESSION, 'PASSWORD_RECOVERY');
+
+    await waitFor(() => expect(screen.getByTestId('recovery')).toHaveTextContent('true'));
+  });
+
+  it('stays out of recovery mode for an ordinary sign-in', async () => {
+    supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
+    renderProbe();
+
+    await fireAuthStateChange(SESSION);
+
+    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('Ø³Ø§Ø±Ø©'));
+    expect(screen.getByTestId('recovery')).toHaveTextContent('false');
+  });
+
+  it('leaves recovery mode once the new password is accepted', async () => {
+    supabaseMock.getSession.mockResolvedValue({ data: { session: null } });
+    supabaseMock.updateUser.mockResolvedValue({ error: null });
+    renderProbe();
+    await fireAuthStateChange(SESSION, 'PASSWORD_RECOVERY');
+    await waitFor(() => expect(screen.getByTestId('recovery')).toHaveTextContent('true'));
+
+    await userEvent.click(screen.getByText('setpassword'));
+
+    await waitFor(() => expect(screen.getByTestId('recovery')).toHaveTextContent('false'));
+    expect(supabaseMock.updateUser).toHaveBeenCalledWith({ password: 'newsecret' });
+  });
+
+  it('surfaces a rejected password and stays in recovery mode', async () => {
+    supabaseMock.getSession.mockResolvedValue({ data: { session: null } });
+    supabaseMock.updateUser.mockResolvedValue({ error: { message: 'too weak' } });
+    renderProbe();
+    await fireAuthStateChange(SESSION, 'PASSWORD_RECOVERY');
+    await waitFor(() => expect(screen.getByTestId('recovery')).toHaveTextContent('true'));
+
+    await userEvent.click(screen.getByText('setpassword'));
+
+    await waitFor(() => expect(screen.getByTestId('pwerror')).toHaveTextContent('too weak'));
+    // Staying in recovery matters: leaving it would drop the cashier into the
+    // POS still holding the old password they could not remember.
+    expect(screen.getByTestId('recovery')).toHaveTextContent('true');
   });
 });
