@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { startRealtime, stopRealtime } from './realtime';
+﻿import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { startRealtime, stopRealtime, buildBindings } from './realtime';
 
 /**
  * realtime.ts is the only place a second register's writes reach this one, and it
@@ -105,13 +107,23 @@ describe('realtime - subscription setup', () => {
     expect(regs.map((r) => r.table).sort()).toEqual([...WATCHED].sort());
   });
 
-  it('narrows every table to the bound shop', () => {
+  it('narrows to the bound shop every table that has a shop_id column', () => {
     // Not the security boundary -- RLS is -- but a missing filter would make a
     // register re-pull on writes it cannot see.
+    //
+    // This used to assert the filter on *every* table, which is precisely what
+    // broke live sync: sale_items and purchase_items have no shop_id column, and
+    // filtering them by one fails the whole channel, so nothing was delivered at
+    // all. The two child tables must stay unfiltered.
     startRealtime('shop-abc', vi.fn());
 
+    const unfiltered = new Set(['sale_items', 'purchase_items']);
     for (const reg of activeChannel().regs) {
-      expect(reg.filter).toBe('shop_id=eq.shop-abc');
+      if (unfiltered.has(reg.table)) {
+        expect(reg.filter, `${reg.table} has no shop_id and must not be filtered`).toBeUndefined();
+      } else {
+        expect(reg.filter).toBe('shop_id=eq.shop-abc');
+      }
     }
   });
 
@@ -273,5 +285,73 @@ describe('realtime - reload coalescing while a pull is in flight', () => {
     gateB.resolve();
     await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     expect(handlerB).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * Live sync was dead in production and nothing said so.
+ *
+ * Every table was subscribed with `filter: shop_id=eq.<id>`, but sale_items and
+ * purchase_items have no shop_id column - they reach their shop through the
+ * parent row. A filter naming a missing column fails the whole channel, so all
+ * nine subscriptions were dead and a second register went stale silently.
+ *
+ * These tests read the migrations, so a table that loses its shop_id column
+ * cannot be filtered again by accident.
+ */
+describe('realtime subscription bindings match the schema', () => {
+  const migrationDir = join(process.cwd(), 'supabase', 'migrations');
+  const schema = readdirSync(migrationDir)
+    .filter((f: string) => f.endsWith('.sql'))
+    .map((f: string) => readFileSync(join(migrationDir, f), 'utf8'))
+    .join('\n');
+
+  /** Tables that declare a shop_id column in the migrations. */
+  function tablesWithShopId(): Set<string> {
+    const out = new Set<string>();
+    for (const m of schema.matchAll(
+      /CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?(\w+)\s*\(([\s\S]*?)\n\);/g
+    )) {
+      if (/^\s*shop_id\s/m.test(m[2])) out.add(m[1]);
+    }
+    return out;
+  }
+
+  it('never filters a table that has no shop_id column', () => {
+    const withShopId = tablesWithShopId();
+    expect(withShopId.size).toBeGreaterThan(0);
+
+    for (const { table, filter } of buildBindings('shop-abc')) {
+      if (filter === undefined) continue;
+      expect(
+        withShopId.has(table),
+        `realtime filters ${table} by shop_id, but the migrations give it no such column. ` +
+          `A channel fails as a unit, so this kills live sync for every table.`
+      ).toBe(true);
+    }
+  });
+
+  it('leaves the two child tables unfiltered', () => {
+    const byTable = new Map(buildBindings('shop-abc').map((b) => [b.table, b.filter]));
+    expect(byTable.get('sale_items')).toBeUndefined();
+    expect(byTable.get('purchase_items')).toBeUndefined();
+  });
+
+  it('still filters the tables that do carry shop_id', () => {
+    const byTable = new Map(buildBindings('shop-abc').map((b) => [b.table, b.filter]));
+    expect(byTable.get('sales')).toBe('shop_id=eq.shop-abc');
+    expect(byTable.get('products')).toBe('shop_id=eq.shop-abc');
+    expect(byTable.get('stock_movements')).toBe('shop_id=eq.shop-abc');
+  });
+
+  it('subscribes to every watched table', () => {
+    expect(buildBindings('shop-abc')).toHaveLength(9);
+  });
+
+  it('keeps the verification probe configured the same way as the app', () => {
+    // The probe used to subscribe without the app's filters, so it reported
+    // SUBSCRIBED while the real channel could not possibly work.
+    const script = readFileSync(join(process.cwd(), 'scripts', 'verify-cloud.mjs'), 'utf8');
+    expect(script).toMatch(/buildBindings|importBindings/);
   });
 });

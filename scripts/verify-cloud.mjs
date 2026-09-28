@@ -65,6 +65,28 @@ export const WATCHED_TABLES = [
   'expenses',
 ];
 
+/**
+ * The bindings the app actually uses, mirrored from src/services/realtime.ts.
+ *
+ * This probe used to subscribe to all nine tables with no filter, while the app
+ * filtered every one of them by `shop_id=eq.<id>`. That made the probe useless as
+ * evidence: it could report SUBSCRIBED for a channel the app could never
+ * establish, because two of those tables have no shop_id column at all and a
+ * channel fails as a unit. src/services/realtime.test.ts asserts these two lists
+ * stay in step.
+ *
+ * sale_items and purchase_items carry no filter; they reach their shop through
+ * the parent row, and RLS still decides delivery.
+ */
+const UNFILTERED_TABLES = new Set(['sale_items', 'purchase_items']);
+
+export function buildBindings(shopId) {
+  return WATCHED_TABLES.map((table) => ({
+    table,
+    filter: UNFILTERED_TABLES.has(table) ? undefined : `shop_id=eq.${shopId}`,
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -450,12 +472,15 @@ async function checkFractionalSupport(supabase) {
 /**
  * @param timeoutMs injectable so the ordering can be tested without waiting 15s.
  */
-export async function checkRealtimeSubscription(supabase, { timeoutMs = 15000 } = {}) {
+export async function checkRealtimeSubscription(supabase, { timeoutMs = 15000, shopId = null } = {}) {
   if (!JSON_MODE) section('Realtime - can this client subscribe to every watched table?');
 
   const channel = supabase.channel('verify-probe');
-  for (const table of WATCHED_TABLES) {
-    channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => {});
+  for (const { table, filter } of buildBindings(shopId ?? 'unknown')) {
+    const opts = filter
+      ? { event: '*', schema: 'public', table, filter }
+      : { event: '*', schema: 'public', table };
+    channel.on('postgres_changes', opts, () => {});
   }
 
   // The channel must NOT be removed here. removeChannel() runs synchronously
@@ -667,7 +692,7 @@ async function main() {
 
   await checkDataIntegrity(supabase);
   await checkFractionalSupport(supabase);
-  await checkRealtimeSubscription(supabase);
+  await checkRealtimeSubscription(supabase, { shopId: profile?.shop_id ?? null });
   if (DO_WRITE) await checkAtomicity(supabase);
 
   if (JSON_MODE) {

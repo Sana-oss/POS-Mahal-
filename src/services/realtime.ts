@@ -40,6 +40,39 @@ const WATCHED_TABLES = [
   'expenses',
 ] as const;
 
+/**
+ * Tables that must NOT carry a `shop_id=eq.<id>` client filter.
+ *
+ * sale_items and purchase_items have no shop_id column at all - they are scoped
+ * through their parent:
+ *
+ *   sale_items      USING (sale_id      IN (SELECT id FROM sales     WHERE shop_id = get_user_shop_id()))
+ *   purchase_items  USING (purchase_id  IN (SELECT id FROM purchases WHERE shop_id = get_user_shop_id()))
+ *
+ * Filtering them by shop_id asks Postgres for a column that does not exist. The
+ * realtime server rejects that binding, and because a channel fails as a unit
+ * the subscription never becomes usable - so NO table delivered anything and a
+ * second register silently went stale. Nine tables subscribed, zero events
+ * delivered, and nothing logged anywhere.
+ *
+ * Dropping the filter is safe: it was a narrowing, never the security boundary.
+ * Row delivery is decided by RLS, and both tables already have the policies
+ * above, which resolve the shop through the parent row.
+ */
+const UNFILTERED_TABLES = new Set<string>(['sale_items', 'purchase_items']);
+
+/**
+ * The subscription bindings for a shop, shared so the channel and any
+ * verification probe configure themselves identically. A probe that omits the
+ * filters the app actually uses proves nothing about the app.
+ */
+export function buildBindings(shopId: string) {
+  return WATCHED_TABLES.map((table) => ({
+    table,
+    filter: UNFILTERED_TABLES.has(table) ? undefined : `shop_id=eq.${shopId}`,
+  }));
+}
+
 /** Coalesce the per-table burst from a single transaction into one re-pull. */
 const DEBOUNCE_MS = 400;
 
@@ -86,15 +119,27 @@ export function startRealtime(shopId: string, handler: () => void): void {
 
   const ch = supabase.channel(`shop:${shopId}`);
 
-  for (const table of WATCHED_TABLES) {
+  for (const { table, filter } of buildBindings(shopId)) {
     ch.on(
       'postgres_changes',
-      { event: '*', schema: 'public', table, filter: `shop_id=eq.${shopId}` },
+      filter ? { event: '*', schema: 'public', table, filter } : { event: '*', schema: 'public', table },
       () => scheduleReload(s)
     );
   }
 
-  ch.subscribe();
+  // The status callback is not decoration. A channel that never subscribes used to
+  // fail completely silently: no log, no UI, and the register simply went stale
+  // with no way to tell that from "nobody sold anything".
+  ch.subscribe((status) => {
+    if (status === 'SUBSCRIBED') return;
+    console.error(
+      `[realtime] live sync channel for shop ${shopId} reported "${status}". ` +
+        `Another register's sales will not appear until this recovers. ` +
+        `A CHANNEL_ERROR here usually means a subscription filter names a column ` +
+        `the table does not have, or the table is not in the supabase_realtime ` +
+        `publication.`
+    );
+  });
   s.channel = ch;
 }
 
