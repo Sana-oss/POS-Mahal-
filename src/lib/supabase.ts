@@ -16,7 +16,18 @@ export const isSupabaseConfigured = Boolean(
   import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
-/** null in local-only mode. */
+/**
+ * null in local-only mode.
+ *
+ * The password-recovery flow relies on the SDK's `detectSessionInUrl`, which
+ * defaults to true and reads the reset token out of the URL fragment. It is not
+ * passed explicitly: in @supabase/supabase-js 2.117 the runtime accepts it but
+ * `SupabaseClientOptions` does not declare it, so passing it fails `tsc`. Leaving
+ * it to the default is the only option the type system allows here, and
+ * src/lib/supabaseConfig.test.ts pins the behaviour so a future upgrade that
+ * changes the default is caught rather than discovered when a reset link opens
+ * the app and silently does nothing.
+ */
 export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
   : null;
