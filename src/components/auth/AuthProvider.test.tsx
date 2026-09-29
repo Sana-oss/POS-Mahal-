@@ -107,7 +107,7 @@ beforeEach(() => {
   supabaseMock.signOut.mockReset().mockResolvedValue({ error: null });
   supabaseMock.updateUser.mockReset().mockResolvedValue({ error: null });
   supabaseMock.profileResult = {
-    data: { id: 'user-1', shop_id: 'shop-7', role: 'owner', full_name: 'Ø³Ø§Ø±Ø©' },
+    data: { id: 'user-1', shop_id: 'shop-7', role: 'owner', full_name: 'سارة' },
     error: null,
   };
   supabaseMock.subscribe.mockReset();
@@ -131,7 +131,7 @@ describe('AuthProvider - offline mode', () => {
     supabaseMock.configured = false;
     store.setSession({
       id: 'local-1',
-      name: 'Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯',
+      name: 'أبو أحمد',
       email: 'a@b.test',
       role: 'owner',
       shift_started_at: new Date().toISOString(),
@@ -139,7 +139,7 @@ describe('AuthProvider - offline mode', () => {
 
     renderProbe();
 
-    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯'));
+    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('أبو أحمد'));
     expect(screen.getByTestId('role')).toHaveTextContent('owner');
   });
 
@@ -166,23 +166,23 @@ describe('AuthProvider - cloud mode', () => {
     renderProbe();
 
     await waitFor(() => expect(screen.getByTestId('shopId')).toHaveTextContent('shop-7'));
-    expect(screen.getByTestId('name')).toHaveTextContent('Ø³Ø§Ø±Ø©');
+    expect(screen.getByTestId('name')).toHaveTextContent('سارة');
   });
 
   /**
    * The store session is what the header, sidebar and dashboard greeting read.
    * fetchProfile used to update only local context state, so the store kept its
-   * seeded placeholder name and the greeting showed 'Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯' no matter who
+   * seeded placeholder name and the greeting showed 'أبو أحمد' no matter who
    * signed in. The test above passed the whole time, because the context was
    * correct - only the store was not.
    */
   it('mirrors the signed-in profile into the store session', async () => {
     supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
-    store.setSession({ id: 'usr-1', name: 'Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯', email: 'x@y.z', role: 'owner' } as never);
+    store.setSession({ id: 'usr-1', name: 'أبو أحمد', email: 'x@y.z', role: 'owner' } as never);
 
     renderProbe();
 
-    await waitFor(() => expect(store.getSession()?.name).toBe('Ø³Ø§Ø±Ø©'));
+    await waitFor(() => expect(store.getSession()?.name).toBe('سارة'));
     expect(store.getSession()?.role).toBe('owner');
   });
 
@@ -190,7 +190,7 @@ describe('AuthProvider - cloud mode', () => {
     supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
     supabaseMock.signOut.mockResolvedValue(undefined);
     renderProbe();
-    await waitFor(() => expect(store.getSession()?.name).toBe('Ø³Ø§Ø±Ø©'));
+    await waitFor(() => expect(store.getSession()?.name).toBe('سارة'));
 
     await userEvent.click(screen.getByText('signout'));
 
@@ -248,7 +248,7 @@ describe('AuthProvider - the session ends without a sign-out', () => {
 describe('AuthProvider - explicit sign-out', () => {
   it('clears the backend session and wipes the cached shop data', async () => {
     supabaseMock.getSession.mockResolvedValue({ data: { session: SESSION } });
-    store.addExpense({ title: 'Ù…ØµØ±ÙˆÙ Ø³Ø§Ø¨Ù‚', amount: 10, category: 'Ø£Ø®Ø±Ù‰' });
+    store.addExpense({ title: 'مصروف سابق', amount: 10, category: 'أخرى' });
 
     const user = userEvent.setup();
     renderProbe();
@@ -287,7 +287,7 @@ describe('AuthProvider - password recovery', () => {
 
     await fireAuthStateChange(SESSION);
 
-    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('Ø³Ø§Ø±Ø©'));
+    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('سارة'));
     expect(screen.getByTestId('recovery')).toHaveTextContent('false');
   });
 

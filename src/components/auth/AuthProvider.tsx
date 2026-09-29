@@ -160,7 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Mirror the signed-in profile into the store's session.
         //
         // The header, sidebar and dashboard greeting all read the store session,
-        // which otherwise stays at the seeded placeholder ('Ø£Ø¨Ùˆ Ø£Ø­Ù…Ø¯') because
+        // which otherwise stays at the seeded placeholder name because
         // nothing in cloud mode ever wrote a name into it. Without this, signing
         // in as anybody showed a placeholder name, and the greeting looked
         // hardcoded no matter what the profile said.
