@@ -145,6 +145,39 @@ export default function App() {
     return <UpdatePasswordView />;
   }
 
+  // A production build with no Supabase configuration would otherwise run
+  // local-only, and silently. It would look like a working POS: sales would
+  // complete, the cashier would see totals, and every one of them would be
+  // written to that one browser's localStorage instead of the shop's database.
+  // Nothing would look wrong until the day that browser's cache was cleared.
+  //
+  // That matters most for a multi-shop deployment, where data isolated per shop
+  // by RLS is the only thing keeping one owner out of another's books. A
+  // misconfigured deploy must stop, not degrade.
+  if (import.meta.env.PROD && !isSupabaseConfigured) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6" dir="rtl">
+        <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-xl p-7 text-center">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center">
+            <AlertTriangle size={28} />
+          </div>
+          <h1 className="mt-4 text-lg font-bold text-slate-900">إعداد النشر غير مكتمل</h1>
+          <p className="mt-2 text-sm text-slate-600 leading-6">
+            هذا البناء لم يُضبط عليه الاتصال بقاعدة البيانات، لذلك تم إيقافه بدل أن يعمل
+            محلياً. أضف المتغيرات التالية ثم أعد النشر:
+          </p>
+          <ul className="mt-3 text-left text-sm text-slate-700 space-y-1" dir="ltr">
+            <li className="font-mono">VITE_SUPABASE_URL</li>
+            <li className="font-mono">VITE_SUPABASE_ANON_KEY</li>
+          </ul>
+          <p className="mt-4 text-xs text-slate-500">
+            Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center">
