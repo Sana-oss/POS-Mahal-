@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, basename } from 'node:path';
 
 /**
  * Arabic must stay real UTF-8, and nothing in CI can see a mojibake regression.
@@ -41,11 +41,18 @@ function collect(dir: string, acc: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     if (SKIP.has(entry)) continue;
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) collect(full, acc);
-    else if (SUFFIXES.has(full.slice(full.lastIndexOf('.'))) && !full.endsWith(SELF)) {
-      const name = full.slice(full.lastIndexOf('\\') + 1);
-      if (!MOJIBAKE_PROBES.has(name)) acc.push(full);
+    if (statSync(full).isDirectory()) {
+      collect(full, acc);
+      continue;
     }
+    if (!SUFFIXES.has(full.slice(full.lastIndexOf('.')))) continue;
+
+    // basename() rather than a manual split. Splitting on '\\' works on Windows
+    // and silently yields the whole path on Linux, so the exclusions never
+    // applied in CI and this test failed there while passing locally.
+    const name = basename(full);
+    if (name === SELF || MOJIBAKE_PROBES.has(name)) continue;
+    acc.push(full);
   }
   return acc;
 }
