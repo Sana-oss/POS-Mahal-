@@ -127,11 +127,31 @@ export function startRealtime(shopId: string, handler: () => void): void {
     );
   }
 
-  // The status callback is not decoration. A channel that never subscribes used to
-  // fail completely silently: no log, no UI, and the register simply went stale
-  // with no way to tell that from "nobody sold anything".
+  // The status callback is not decoration: a channel that never subscribes used
+  // to fail completely silently, with no log, no UI, and no way to tell that
+  // apart from "nobody sold anything".
+  //
+  // But it must not cry wolf either. `CLOSED` is a normal teardown status, and
+  // StrictMode double-invokes effects in development, so startRealtime runs
+  // twice and the second call closes the first channel. Logging that as an error
+  // printed an alarming red message on a perfectly healthy dev server, which is
+  // worse than the silence it replaced: a warning people learn to ignore is a
+  // warning that stops working.
+  let everSubscribed = false;
   ch.subscribe((status) => {
-    if (status === 'SUBSCRIBED') return;
+    if (status === 'SUBSCRIBED') {
+      everSubscribed = true;
+      return;
+    }
+    if (status === 'CLOSED') {
+      // Normal when we are tearing the channel down ourselves, or when the socket
+      // drops after a healthy subscription. Neither means live sync is broken.
+      if (everSubscribed) return;
+      console.warn(
+        `[realtime] the channel for shop ${shopId} closed before it ever subscribed.`
+      );
+      return;
+    }
     console.error(
       `[realtime] live sync channel for shop ${shopId} reported "${status}". ` +
         `Another register's sales will not appear until this recovers. ` +
