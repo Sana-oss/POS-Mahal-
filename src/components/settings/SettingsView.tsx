@@ -7,10 +7,15 @@ import {
 } from '../../services/cloudSync';
 import { getBoundShopId, isCloudActive } from '../../lib/dataSource';
 import { useStore } from '../../hooks/useStore';
+import { useAuth } from '../auth/AuthProvider';
+import { StaffInvitePanel } from './StaffInvitePanel';
 
 export const SettingsView: React.FC = () => {
   const { state, updateSettings, resetToDefault } = useStore();
   const settings = state.settings;
+  // Read the signed-in role for the staff panel. A hook, so it is called here
+  // rather than inside the JSX where it would re-run on every render.
+  const { profile } = useAuth();
 
   const [shopName, setShopName] = useState(settings.shop_name);
   const [branchName, setBranchName] = useState(settings.branch_name);
@@ -309,6 +314,8 @@ export const SettingsView: React.FC = () => {
           </button>
         </div>
       </form>
+
+      <StaffInvitePanel role={profile?.role} />
 
       {/* Backup & System Reset Section */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-col gap-4">

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Mahall POS (محل POS)
  * A fast Arabic RTL POS, inventory, debt, expense, and profit-management system
  * for small grocery and food stores.
@@ -31,6 +31,8 @@ import { Product, Sale } from './types';
 import { useAuth } from './components/auth/AuthProvider';
 import { LoginView } from './components/auth/LoginView';
 import { UpdatePasswordView } from './components/auth/UpdatePasswordView';
+import { SignUpView } from './components/auth/SignUpView';
+import { inviteTokenFromUrl } from './lib/invites';
 import { AlertTriangle, CloudOff, Loader2, RefreshCw } from 'lucide-react';
 
 export default function App() {
@@ -187,10 +189,40 @@ export default function App() {
   }
 
 
+  // Registration and invitation. Read once on mount from the URL rather than on
+  // every render, so the token is not re-read (and cannot be re-fetched) while
+  // the cashier types.
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [authScreen, setAuthScreen] = useState<'signin' | 'signup'>('signin');
+
+  useEffect(() => {
+    const token = inviteTokenFromUrl();
+    if (token) {
+      setInviteToken(token);
+      setAuthScreen('signup');
+    }
+  }, []);
+
   // The cloud sign-in wall only applies when Supabase is actually configured;
   // otherwise the app runs local-only against localStorage.
   if (isSupabaseConfigured && !session) {
-    return <LoginView />;
+    if (authScreen === 'signup') {
+      return (
+        <SignUpView
+          inviteToken={inviteToken}
+          onBackToLogin={() => {
+            setAuthScreen('signin');
+            // Drop the token from the URL, so a reload does not bounce the
+            // cashier back into the join screen and Back does not re-enter it.
+            if (inviteToken) {
+              window.history.replaceState({}, '', window.location.pathname);
+              setInviteToken(null);
+            }
+          }}
+        />
+      );
+    }
+    return <LoginView onSignUp={() => setAuthScreen('signup')} />;
   }
 
   // Cloud gate: while the shop is being pulled (or when it failed) we must not

@@ -4,7 +4,7 @@ import { Store, Loader2, LogIn, MailCheck } from 'lucide-react';
 
 type Mode = 'signin' | 'forgot';
 
-export function LoginView() {
+export function LoginView({ onSignUp }: { onSignUp?: () => void }) {
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -195,6 +195,22 @@ export function LoginView() {
               )}
             </div>
           </form>
+        )}
+
+        {/* Registration, for a new shop owner or a cashier joining by invite.
+            Shown only on the sign-in screen: a cashier arriving from an invite
+            link lands on the join screen instead, and must not be able to
+            wander into creating a shop by accident. */}
+        {onSignUp && mode === 'signin' && !sent && (
+          <div className="mt-5 pt-5 border-t border-slate-100 text-center">
+            <button
+              type="button"
+              onClick={onSignUp}
+              className="text-sm text-slate-500 hover:text-teal-600 transition-colors"
+            >
+              ليس لديك حساب؟ افتح متجراً جديداً أو انضم بدعوة
+            </button>
+          </div>
         )}
       </div>
     </div>

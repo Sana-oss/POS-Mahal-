@@ -214,3 +214,98 @@ describe('credit limit enforcement', () => {
     expect(client).toMatch(/const limit = Number\.isFinite\(creditLimit\)[\s\S]{0,120}if \(limit <= 0\)/);
   });
 });
+
+/**
+ * Shop sign-up and cashier invites (migration 0009).
+ *
+ * The trigger this migration replaces gave every signup a brand new shop, so a
+ * second cashier joining a shop silently produced a separate shop with its own
+ * books. These assert the rules that close that, because the failure mode is
+ * invisible until two people are looking at different numbers.
+ */
+describe('shop invites (migration 0009)', () => {
+  const sql = readFileSync(join(SUPABASE, 'migrations', '0009_shop_signup_and_invites.sql'), 'utf8');
+
+  it('routes an invited signup to the invited shop instead of a new one', () => {
+    // The trigger must look up a pending invite BEFORE creating a shop.
+    const inviteLookup = sql.indexOf('FROM shop_invites');
+    const shopInsert = sql.indexOf('INSERT INTO public.shops');
+    expect(inviteLookup, 'the trigger must check for a pending invite').toBeGreaterThan(-1);
+    expect(shopInsert, 'the trigger must still create a shop when uninvited').toBeGreaterThan(-1);
+    expect(inviteLookup).toBeLessThan(shopInsert);
+  });
+
+  it('still creates a shop for an uninvited signup', () => {
+    // Otherwise nobody could ever open a shop from the app again.
+    expect(sql).toMatch(/INSERT INTO public\.shops/);
+    expect(sql).toMatch(/role\s*=\s*'owner'|'owner'/);
+  });
+
+  it('only ever invites a cashier, never a second owner', () => {
+    expect(sql).toMatch(/role\s+TEXT\s+NOT NULL\s+DEFAULT\s+'cashier'\s+CHECK\s*\(role\s*=\s*'cashier'\)/);
+    expect(sql).toMatch(/Only a cashier invite can be issued/);
+  });
+
+  it('restricts issuing an invite to the shop owner', () => {
+    expect(sql).toMatch(/Only the shop owner can issue invites/);
+    expect(sql).toMatch(/owner_id\s+IS\s+DISTINCT\s+FROM\s+auth\.uid\(\)/);
+  });
+
+  it('enables RLS on the invites table with a shop-scoped policy', () => {
+    expect(sql).toMatch(/ALTER TABLE shop_invites ENABLE ROW LEVEL SECURITY/);
+    expect(sql).toMatch(/ON shop_invites[\s\S]{0,80}shop_id\s*=\s*get_user_shop_id\(\)/);
+  });
+
+  it('generates an unguessable token', () => {
+    // 24 random bytes, hex encoded. A sequential or short token would let anyone
+    // mint access to another shop's books.
+    expect(sql).toMatch(/gen_random_bytes\(24\)/);
+    expect(sql).toMatch(/token\s+TEXT\s+NOT NULL\s+UNIQUE/);
+  });
+
+  it('never returns the token from the public read function', () => {
+    // Reachable before sign-in by anyone holding a link, so it must expose only
+    // what a joiner needs to know what they are accepting. The token belongs in
+    // the WHERE clause as the lookup key; what matters is that it is not among
+    // the returned columns.
+    const start = sql.indexOf('FUNCTION public.get_shop_invite');
+    const body = sql.slice(start, sql.indexOf('$$ LANGUAGE', start));
+
+    // Only the RETURNS TABLE column list, which starts after the closing
+    // parenthesis of the parameter list. The signature itself names p_token -
+    // that is the lookup key, not a returned value.
+    const columns = body.slice(body.indexOf('RETURNS TABLE') + 'RETURNS TABLE'.length);
+    expect(columns.slice(0, columns.indexOf(') AS'))).not.toMatch(/\btoken\b/);
+
+    // The projection is the four safe fields and nothing else.
+    const projection = body.slice(body.indexOf('SELECT'), body.indexOf('FROM shop_invites'));
+    expect(projection).not.toMatch(/i\.token/);
+    expect(projection).toMatch(/s\.name/);
+    expect(projection).toMatch(/i\.role/);
+
+    // It is still used to find the row, which is the point of the function.
+    expect(body).toMatch(/WHERE i\.token = p_token/);
+  });
+
+  it('expires invites and refuses a used one', () => {
+    expect(sql).toMatch(/expires_at\s+TIMESTAMPTZ\s+NOT NULL\s+DEFAULT\s*\(NOW\(\)\s*\+\s*INTERVAL\s+'14 days'\)/);
+    expect(sql).toMatch(/That invite has already been used/);
+    expect(sql).toMatch(/That invite has expired/);
+  });
+
+  it('refuses to move a user who already belongs to a shop', () => {
+    // Silently re-homing them would orphan whatever the previous shop recorded.
+    expect(sql).toMatch(/already belongs to a different shop/);
+  });
+
+  it('matches the invited email case-insensitively', () => {
+    // Supabase treats the local part case-insensitively; a strict match would
+    // strand a valid invite on a capitalisation difference alone.
+    expect(sql).toMatch(/lower\(email\)\s*=\s*lower\(/);
+  });
+
+  it('fails loudly if any RLS table has no policy', () => {
+    // An RLS table with no policy is invisible to everyone: a silent break.
+    expect(sql).toMatch(/has RLS enabled but no policy/);
+  });
+});
