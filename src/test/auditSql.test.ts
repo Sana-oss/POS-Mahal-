@@ -375,3 +375,82 @@ describe('migration SQL operators', () => {
     expect(code).toMatch(/split_part\(v_email, '@', 2\)/);
   });
 });
+
+/**
+ * Functions that only exist if an extension is installed.
+ *
+ * `gen_random_bytes` is pgcrypto, and this project never created pgcrypto - 0001
+ * created only "uuid-ossp". `gen_random_uuid` looks like it belongs to the same
+ * extension but is core since PostgreSQL 13, which is why every
+ * `id UUID DEFAULT gen_random_uuid()` has always worked while the invite function
+ * did not.
+ *
+ * A SECURITY DEFINER function pins search_path to public, so an extension living
+ * in another schema cannot be found even when installed. Combined with plpgsql
+ * bodies being compiled only on first call, the result is a function that
+ * `supabase db push` records as applied and that fails the first time a shop
+ * owner uses the feature.
+ *
+ * Migration 0011 drops the dependency instead of adding an extension, and every
+ * later definition of a function is checked here.
+ */
+describe('no undeclared extension dependencies in functions', () => {
+  it('uses only core functions, or ones from an extension we created', () => {
+    const dir = join(SUPABASE, 'migrations');
+    const created = new Set<string>();
+    for (const name of readdirSync(dir).filter((f) => f.endsWith('.sql'))) {
+      // Strip line comments first. 0011 quotes "CREATE EXTENSION IF NOT EXISTS
+      // \"uuid-ossp\"" in its explanation of this very test, and counting that
+      // would make the assertion depend on its own prose.
+      const code = readFileSync(join(dir, name), 'utf8')
+        .split('\n')
+        .map((l) => l.split('--')[0])
+        .join('\n');
+      // `[\w-]+` not `[\w]+`: extension names are hyphenated ("uuid-ossp"),
+      // and a \w class stops at the hyphen, which read the name as "uuid".
+      for (const m of code.matchAll(/CREATE EXTENSION(?:\s+IF NOT EXISTS)?\s+"?([\w-]+)"?/gi)) {
+        created.add(m[1].toLowerCase());
+      }
+    }
+    // uuid-ossp is the one we create. Anything else must be core.
+    expect([...created]).toEqual(['uuid-ossp']);
+
+    // Extension-provided functions, and the extension that provides each.
+    const EXTENSION_FUNCTIONS: Record<string, string> = {
+      gen_random_bytes: 'pgcrypto',
+      gen_random_uuid: 'core', // since PostgreSQL 13
+      uuid_generate_v4: 'uuid-ossp',
+      uuid_generate_v1: 'uuid-ossp',
+      crypt: 'pgcrypto',
+      digest: 'pgcrypto',
+    };
+
+    const latest = new Map<string, string>();
+    for (const name of readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+      const raw = readFileSync(join(dir, name), 'utf8');
+      for (const m of raw.matchAll(
+        /CREATE OR REPLACE FUNCTION\s+(?:public\.)?(\w+)\s*\([^)]*\)[\s\S]*?\$\$([\s\S]*?)\$\$/gi
+      )) {
+        latest.set(m[1].toLowerCase(), m[2]);
+      }
+    }
+
+    const offenders: string[] = [];
+    for (const [fn, body] of latest) {
+      const code = body.split('\n').map((l) => l.split('--')[0]).join('\n');
+      for (const [call, provider] of Object.entries(EXTENSION_FUNCTIONS)) {
+        if (!new RegExp(`\\b${call}\\s*\\(`).test(code)) continue;
+        if (provider !== 'core' && !created.has(provider)) {
+          offenders.push(`${fn} calls ${call}(), which needs ${provider} - not installed`);
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      'These functions need an extension that was never created. Add the CREATE ' +
+        'EXTENSION, or use a core equivalent, or the function fails the first time ' +
+        'someone uses the feature.'
+    ).toEqual([]);
+  });
+});
