@@ -42,6 +42,26 @@ export default function App() {
   const [cart] = useCart();
   const [currentTab, setCurrentTab] = useState<string>('pos');
 
+  // Registration and invitation. Read once on mount from the URL rather than on
+  // every render, so the token is not re-read (and cannot be re-fetched) while
+  // the cashier types.
+  //
+  // These live with the other hooks, above EVERY early return below. Hooks must be
+  // called unconditionally: placing them after the recovery, deploy-guard or
+  // auth-loading returns meant those paths skipped two of them, so React saw a
+  // different hook order between renders and threw "Rendered more hooks than
+  // during the previous render" - a hard crash, not a warning.
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [authScreen, setAuthScreen] = useState<'signin' | 'signup'>('signin');
+
+  useEffect(() => {
+    const token = inviteTokenFromUrl();
+    if (token) {
+      setInviteToken(token);
+      setAuthScreen('signup');
+    }
+  }, []);
+
   // Cloud bootstrap: pull the whole shop into the local cache once we know
   // which shop this session belongs to. The cache (and therefore every screen)
   // is empty until this resolves, so a failed sync can never show stale or
@@ -188,20 +208,6 @@ export default function App() {
     );
   }
 
-
-  // Registration and invitation. Read once on mount from the URL rather than on
-  // every render, so the token is not re-read (and cannot be re-fetched) while
-  // the cashier types.
-  const [inviteToken, setInviteToken] = useState<string | null>(null);
-  const [authScreen, setAuthScreen] = useState<'signin' | 'signup'>('signin');
-
-  useEffect(() => {
-    const token = inviteTokenFromUrl();
-    if (token) {
-      setInviteToken(token);
-      setAuthScreen('signup');
-    }
-  }, []);
 
   // The cloud sign-in wall only applies when Supabase is actually configured;
   // otherwise the app runs local-only against localStorage.
