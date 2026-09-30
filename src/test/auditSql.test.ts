@@ -309,3 +309,69 @@ describe('shop invites (migration 0009)', () => {
     expect(sql).toMatch(/has RLS enabled but no policy/);
   });
 });
+
+/**
+ * Malformed SQL operators.
+ *
+ * Migration 0009 shipped `p_email !* '...'` - `!*` is not a PostgreSQL operator;
+ * `!~` is. It was chosen to avoid `!` being mangled on the way into the file,
+ * which was a bad trade. The migration reported success because a plpgsql body
+ * is only compiled on first call, so the failure appeared as
+ * "operator does not exist: text !* unknown" the first time a shop owner
+ * actually tried to invite a cashier.
+ *
+ * Nothing local can execute plpgsql, and `supabase db push` is happy to record a
+ * migration whose function body never compiles. So the sequences are checked
+ * statically, with line comments stripped first - 0010's prose names these
+ * exact sequences in order to explain what it fixed, and that must not trip it.
+ */
+describe('migration SQL operators', () => {
+  const NOT_OPERATORS = ['!*', '!<', '!~', '!#', '!|', '!!', '@*', '@#', '~~', '~*', '~#'];
+
+  it('leaves no malformed operator in any migration that is still in force', () => {
+    const dir = join(SUPABASE, 'migrations');
+    // 0009 is applied history and is deliberately left as written: editing an
+    // applied migration changes nothing, because Supabase tracks versions
+    // rather than file contents. 0010 supersedes the broken function.
+    //
+    // Each entry is the body of one function, not the whole file - a file can
+    // hold several functions, and only the latest definition of each is live.
+    const latest = new Map<string, string>();
+    for (const name of readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+      const raw = readFileSync(join(dir, name), 'utf8');
+      for (const m of raw.matchAll(
+        /CREATE OR REPLACE FUNCTION\s+(?:public\.)?(\w+)\s*\([^)]*\)[\s\S]*?\$\$([\s\S]*?)\$\$/gi
+      )) {
+        latest.set(m[1].toLowerCase(), m[2]);
+      }
+    }
+
+    const offenders: string[] = [];
+    for (const [fn, body] of latest) {
+      body.split('\n').forEach((line, i) => {
+        const code = line.split('--')[0];
+        for (const bad of NOT_OPERATORS) {
+          if (code.includes(bad)) offenders.push(`${fn}:${i + 1} contains ${bad}`);
+        }
+      });
+    }
+
+    expect(
+      offenders,
+      'These are not PostgreSQL operators. A plpgsql body is compiled on first ' +
+        'call, so supabase db push will accept a function that can never run.'
+    ).toEqual([]);
+  });
+
+  it('validates an email without a regex operator', () => {
+    // 0010 replaced the operator with ordinary functions, which cannot be
+    // mangled on the way into the file.
+    const fixed = readFileSync(
+      join(SUPABASE, 'migrations', '0010_fix_invite_email_validation.sql'),
+      'utf8'
+    );
+    const code = fixed.split('\n').map((l) => l.split('--')[0]).join('\n');
+    expect(code).toMatch(/position\('@' IN v_email\)/);
+    expect(code).toMatch(/split_part\(v_email, '@', 2\)/);
+  });
+});
